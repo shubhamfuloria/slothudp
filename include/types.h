@@ -30,6 +30,8 @@ struct HandshakePacket {
     PacketHeader header;
     QString filename;
     quint64 totalSize;
+    quint32 requestId;
+    quint8 protocolVersion;
     QString speedHint;
 };
 
