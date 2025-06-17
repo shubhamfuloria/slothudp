@@ -9,7 +9,8 @@ enum class PacketType : quint8 {
     ACK = 1,
     NACK = 2,
     HANDSHAKE = 3,
-    FIN = 4,
+    HANDSHAKEACK = 4,
+    FIN = 5,
 };
 
 #pragma pack(push, 1)
@@ -19,6 +20,13 @@ struct PacketHeader {
     quint16 payloadSize;
     quint32 checksum;
 
+
+    PacketHeader() {}
+    PacketHeader(PacketType type, quint32 sequenceNumber, quint16 payloadSize) {
+        this->type = type;
+        this->sequenceNumber = sequenceNumber;
+        this->payloadSize = payloadSize;
+    }
     void print() {
         qDebug() <<
             QString("Packet Type: %1, Seq: %2, payloadSize: %3, checksum: %4")

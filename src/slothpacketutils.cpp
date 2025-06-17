@@ -33,4 +33,34 @@ bool parsePacketHeader(const QByteArray& buffer, PacketHeader& outHeader, QByteA
     return calculated == outHeader.checksum;
 }
 
+QByteArray serializePacket(const HandshakePacket& packet)
+{
+    QByteArray payload;
+    QDataStream stream(&payload, QIODevice::WriteOnly);
+    stream << packet.filename
+           << packet.totalSize
+           << packet.requestId
+           << packet.protocolVersion;
+
+
+    // add header at the top of the packet
+    PacketHeader header;
+    header.type = PacketType::HANDSHAKE;
+    header.sequenceNumber = 0;
+    header.payloadSize = payload.size();
+    header.checksum = qChecksum(payload.constData(), payload.size());
+
+    QByteArray mainBuffer;
+    QDataStream mainStream(&mainBuffer, QIODevice::WriteOnly);
+
+    mainStream << static_cast<quint8>(header.type)
+               << header.sequenceNumber
+               << header.payloadSize
+               << header.checksum
+               << payload;
+
+    return mainBuffer;
+}
+
+
 }

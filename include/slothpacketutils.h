@@ -8,8 +8,9 @@
 namespace SlothPacketUtils {
 
     bool parsePacketHeader(const QByteArray& buffer, PacketHeader& outHeader, QByteArray&  outPayload);
+    quint16 calculateChecksum(const QByteArray& data);
 
-quint16 calculateChecksum(const QByteArray& data);
+    QByteArray serializePacket(const HandshakePacket& packet);
 
 }
 

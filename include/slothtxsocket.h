@@ -29,7 +29,6 @@ private:
     DataPacket createDataPacket(int seqNum, const QByteArray& chunk);
     QByteArray serializePacket(const DataPacket& packet);
 
-    QByteArray serializePacket(const HandshakePacket& packet);
 
 
     void sendWindow();

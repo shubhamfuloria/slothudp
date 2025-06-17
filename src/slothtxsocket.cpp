@@ -33,7 +33,7 @@ void SlothTxSocket::initiateHandshake(
 
     m_filePath = filePath;
     m_fileSize = fileSize;
-    m_destAddress = destination;
+    m_destAddress = QHostAddress(destination);
     m_destPort = port;
 
     // generate handshake packet
@@ -43,41 +43,12 @@ void SlothTxSocket::initiateHandshake(
     packet.requestId = QRandomGenerator::global()->generate();
     packet.protocolVersion = 1;
 
-    QByteArray buffer = serializePacket(packet);
+    QByteArray buffer = SlothPacketUtils::serializePacket(packet);
     // send the buffer over to network
 
     transmitBuffer(buffer);
 }
 
-
-QByteArray SlothTxSocket::serializePacket(const HandshakePacket& packet)
-{
-    QByteArray payload;
-    QDataStream stream(&payload, QIODevice::WriteOnly);
-    stream << packet.filename
-           << packet.totalSize
-           << packet.requestId
-           << packet.protocolVersion;
-
-
-    // add header at the top of the packet
-    PacketHeader header;
-    header.type = PacketType::HANDSHAKE;
-    header.sequenceNumber = 0;
-    header.payloadSize = payload.size();
-    header.checksum = qChecksum(payload.constData(), payload.size());
-
-    QByteArray mainBuffer;
-    QDataStream mainStream(&mainBuffer, QIODevice::WriteOnly);
-
-    mainStream << static_cast<quint8>(header.type)
-               << header.sequenceNumber
-               << header.payloadSize
-               << header.checksum
-               << payload;
-
-    return mainBuffer;
-}
 
 bool SlothTxSocket::transmitBuffer(const QByteArray& buffer)
 {
@@ -99,9 +70,8 @@ bool SlothTxSocket::transmitBuffer(const QByteArray& buffer)
 void SlothTxSocket::handleReadyRead()
 {
     while(hasPendingDatagrams()) {
-        QNetworkDatagram datagram = receiveDatagram();
+        QNetworkDatagram datagram = receiveDatagram(4096);
         // process the datagram
-
         QByteArray buffer = datagram.data();
         QByteArray payload;
         PacketHeader header;
@@ -110,6 +80,18 @@ void SlothTxSocket::handleReadyRead()
         if(!success) {
             qWarning() << "SlothTX: Checksum failed, dropping packet";
             continue;
+        }
+
+        switch(header.type) {
+
+
+        case PacketType::HANDSHAKEACK:
+            qDebug() << "Received handshake ack";
+            // at this point we should start sending file packets
+            break;
+
+        default:
+            qDebug() << "SlothTx:: received unexpected packet, dropping...";
         }
     }
 }
