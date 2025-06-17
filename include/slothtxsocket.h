@@ -6,8 +6,10 @@
 
 #include <include/types.h>
 
-class SlothTxSocket : QUdpSocket
+class SlothTxSocket : public QUdpSocket
 {
+    Q_OBJECT
+
 public:
     SlothTxSocket();
 
@@ -36,6 +38,13 @@ private:
     QByteArray readChunkFromFile();
     void resetFile();
 
+    /**
+     * @brief sendPacket: sends the buffer to network m_desitnation address
+     * @param buffer
+     * @return true on success
+     */
+    bool transmitBuffer(const QByteArray& buffer);
+
 
     void stopTransmission();
 
@@ -43,11 +52,16 @@ private:
     QString m_fileSize;
     QHostAddress m_destAddress;
     quint16 m_destPort;
+    int m_windowSize;
+    int m_base;
 
 
 
 private slots:
-    void rxUdpSocket();
+    /**
+     * @brief handleReadyRead: gets triggered when the socket receives some datagram
+     */
+    void handleReadyRead();
 
 
 

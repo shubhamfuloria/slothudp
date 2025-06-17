@@ -8,6 +8,7 @@ CONFIG += c++17 cmdline
 
 SOURCES += \
         src/main.cpp \
+        src/slothpacketutils.cpp \
         src/slothrxsocket.cpp \
         src/slothtxsocket.cpp
 
@@ -17,6 +18,7 @@ else: unix:!android: target.path = /opt/$${TARGET}/bin
 !isEmpty(target.path): INSTALLS += target
 
 HEADERS += \
+    include/slothpacketutils.h \
     include/slothrxsocket.h \
     include/slothtxsocket.h \
     include/types.h

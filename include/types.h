@@ -2,6 +2,7 @@
 #define TYPES_H
 
 #include <QVector>
+#include <QDebug>
 
 enum class PacketType : quint8 {
     DATA = 0,
@@ -17,6 +18,15 @@ struct PacketHeader {
     quint32 sequenceNumber;
     quint16 payloadSize;
     quint32 checksum;
+
+    void print() {
+        qDebug() <<
+            QString("Packet Type: %1, Seq: %2, payloadSize: %3, checksum: %4")
+                        .arg(static_cast<quint8>(type))
+                        .arg(sequenceNumber)
+                        .arg(payloadSize)
+                        .arg(checksum);
+    }
 };
 #pragma pack(pop)
 

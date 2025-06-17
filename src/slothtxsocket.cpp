@@ -1,11 +1,23 @@
 #include "include/slothtxsocket.h"
+#include "include/slothpacketutils.h"
 
 #include <QRandomGenerator>
 #include <QIODevice>
 #include <QDataStream>
 #include <QFileInfo>
+#include <QNetworkDatagram>
 
-SlothTxSocket::SlothTxSocket() {}
+SlothTxSocket::SlothTxSocket()
+{
+
+    bool success = bind(4000);
+
+    if(!success) {
+        qWarning() << "Could not bind UDP Socket at port 4000 for SlothTx, file transfer will not work";
+    }
+
+    connect(this, &QUdpSocket::readyRead, this, &SlothTxSocket::handleReadyRead);
+}
 
 
 void SlothTxSocket::initiateHandshake(
@@ -33,6 +45,8 @@ void SlothTxSocket::initiateHandshake(
 
     QByteArray buffer = serializePacket(packet);
     // send the buffer over to network
+
+    transmitBuffer(buffer);
 }
 
 
@@ -63,4 +77,39 @@ QByteArray SlothTxSocket::serializePacket(const HandshakePacket& packet)
                << payload;
 
     return mainBuffer;
+}
+
+bool SlothTxSocket::transmitBuffer(const QByteArray& buffer)
+{
+    if(m_destAddress.isNull()) {
+        qWarning() << "Destination address not set, cannot transmit buffer";
+        return false;
+    }
+
+    QNetworkDatagram datagram;
+
+    datagram.setData(buffer);
+    datagram.setDestination(m_destAddress, m_destPort);
+    quint64 bytesSent = writeDatagram(datagram);
+
+    // -1 : failed to write datagram
+    return bytesSent != -1;
+}
+
+void SlothTxSocket::handleReadyRead()
+{
+    while(hasPendingDatagrams()) {
+        QNetworkDatagram datagram = receiveDatagram();
+        // process the datagram
+
+        QByteArray buffer = datagram.data();
+        QByteArray payload;
+        PacketHeader header;
+        bool success = SlothPacketUtils::parsePacketHeader(buffer, header, payload);
+
+        if(!success) {
+            qWarning() << "SlothTX: Checksum failed, dropping packet";
+            continue;
+        }
+    }
 }
