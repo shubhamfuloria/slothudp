@@ -62,5 +62,21 @@ QByteArray serializePacket(const HandshakePacket& packet)
     return mainBuffer;
 }
 
+QByteArray serializePacket(const DataPacket& packet)
+{
 
+    QByteArray buffer;
+    QDataStream stream(&buffer, QIODevice::WriteOnly);
+
+    stream << static_cast<quint8>(packet.header.type)
+           << packet.header.sequenceNumber
+           << packet.header.payloadSize
+           << packet.header.checksum;
+
+
+
+    // serialize chunk
+    stream << packet.chunk;
+    return buffer;
+}
 }

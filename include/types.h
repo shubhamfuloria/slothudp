@@ -41,7 +41,7 @@ struct PacketHeader {
 
 struct DataPacket {
     PacketHeader header;
-    QVector<quint8> payload;
+    QByteArray chunk;
 };
 
 struct HandshakePacket {

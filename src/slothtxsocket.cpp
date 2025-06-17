@@ -86,8 +86,10 @@ void SlothTxSocket::handleReadyRead()
 
 
         case PacketType::HANDSHAKEACK:
-            qDebug() << "Received handshake ack";
+            qDebug() << "Received handshake acknowledgement";
             // at this point we should start sending file packets
+
+
             break;
 
         default:
@@ -95,3 +97,54 @@ void SlothTxSocket::handleReadyRead()
         }
     }
 }
+
+bool SlothTxSocket::initiateFileTransfer()
+{
+    m_file.setFileName(m_filePath);
+    if (!m_file.open(QIODevice::ReadOnly)) {
+        qWarning() << "Failed to open file for reading:" << m_file.errorString();
+        return false;
+    }
+
+    m_nextSeqNum = 0;
+    m_baseSeqNum = 0;
+    m_windowSize = 4;
+
+    sendNextWindow();
+    return true;
+}
+
+void SlothTxSocket::sendNextWindow()
+{
+    if (!m_file.isOpen() || !m_file.isReadable()) {
+        qWarning() << "File not open for reading!";
+        return;
+    }
+
+    while ((m_nextSeqNum < m_baseSeqNum + m_windowSize) && !m_file.atEnd()) {
+        QByteArray chunk = m_file.read(m_chunkSize);
+
+
+        DataPacket packet;
+        packet.header.sequenceNumber = m_nextSeqNum;
+        packet.header.type = PacketType::DATA;
+        packet.header.payloadSize = packet.chunk.size();
+        packet.header.checksum = qChecksum(packet.chunk.constData(), packet.header.payloadSize);
+
+        packet.chunk = chunk;
+
+
+        QByteArray buffer = SlothPacketUtils::serializePacket(packet);
+
+        transmitBuffer(buffer);
+
+        m_sendWindow[m_nextSeqNum] = buffer;
+
+        ++m_nextSeqNum;
+    }
+
+    if (m_file.atEnd()) {
+        qDebug() << "Reached end of file (EOF). Waiting for ACKs before sending FIN.";
+    }
+}
+

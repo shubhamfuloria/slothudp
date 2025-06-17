@@ -11,6 +11,7 @@ namespace SlothPacketUtils {
     quint16 calculateChecksum(const QByteArray& data);
 
     QByteArray serializePacket(const HandshakePacket& packet);
+    QByteArray serializePacket(const DataPacket& packet);
 
 }
 

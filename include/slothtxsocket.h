@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QUdpSocket>
+#include <QFile>
 
 #include <include/types.h>
 
@@ -27,9 +28,9 @@ private:
     void handleHandshakeAck(const QByteArray& packet);
 
     DataPacket createDataPacket(int seqNum, const QByteArray& chunk);
-    QByteArray serializePacket(const DataPacket& packet);
 
 
+    void sendNextWindow();
 
     void sendWindow();
     void sendPacket(DataPacket packet);
@@ -44,15 +45,27 @@ private:
      */
     bool transmitBuffer(const QByteArray& buffer);
 
+    /**
+     * @brief initiateFileTransfer: initializes the file present at m_filePath and prepares it for file transfer
+     * @return
+     */
+    bool initiateFileTransfer();
+
 
     void stopTransmission();
 
     QString m_filePath;
     QString m_fileSize;
+    QFile m_file;
     QHostAddress m_destAddress;
     quint16 m_destPort;
     int m_windowSize;
-    int m_base;
+    // oldest unacknowledged packet
+    int m_baseSeqNum;
+    int m_nextSeqNum;
+    int m_chunkSize = 700;
+    QMap<quint32, QByteArray>m_sendWindow;
+
 
 
 
