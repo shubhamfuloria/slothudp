@@ -41,7 +41,10 @@ void SlothTxSocket::initiateHandshake(
     packet.filename = QFileInfo(filePath).fileName();
     packet.totalSize = fileSize;
     packet.requestId = QRandomGenerator::global()->generate();
-    packet.protocolVersion = 1;
+    packet.protocolVersion = m_protoVer;
+
+    qDebug() << "SlothTX:: packet ";
+    packet.print();
 
     QByteArray buffer = SlothPacketUtils::serializePacket(packet);
     // send the buffer over to network
@@ -88,14 +91,21 @@ void SlothTxSocket::handleReadyRead()
         case PacketType::HANDSHAKEACK:
             qDebug() << "Received handshake acknowledgement";
             // at this point we should start sending file packets
-
-
+            handleHandshakeAck(header.sequenceNumber);
             break;
 
         default:
             qDebug() << "SlothTx:: received unexpected packet, dropping...";
         }
     }
+}
+
+void SlothTxSocket::handleHandshakeAck(quint32 requestId)
+{
+    qDebug() << "Received handshake ack for request Id " << requestId;
+    // verify if it's a valid request id and start file transfer
+
+    initiateFileTransfer();
 }
 
 bool SlothTxSocket::initiateFileTransfer()
@@ -108,7 +118,7 @@ bool SlothTxSocket::initiateFileTransfer()
 
     m_nextSeqNum = 0;
     m_baseSeqNum = 0;
-    m_windowSize = 4;
+    m_windowSize = 10;
 
     sendNextWindow();
     return true;
@@ -128,14 +138,15 @@ void SlothTxSocket::sendNextWindow()
         DataPacket packet;
         packet.header.sequenceNumber = m_nextSeqNum;
         packet.header.type = PacketType::DATA;
-        packet.header.payloadSize = packet.chunk.size();
-        packet.header.checksum = qChecksum(packet.chunk.constData(), packet.header.payloadSize);
+        packet.header.payloadSize = chunk.size();
+        packet.header.checksum = qChecksum(chunk.constData(), packet.header.payloadSize);
 
         packet.chunk = chunk;
 
 
         QByteArray buffer = SlothPacketUtils::serializePacket(packet);
-
+        qDebug() << "sending data packet " << chunk.toHex();
+        packet.header.print();
         transmitBuffer(buffer);
 
         m_sendWindow[m_nextSeqNum] = buffer;

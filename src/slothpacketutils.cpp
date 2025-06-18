@@ -79,4 +79,24 @@ QByteArray serializePacket(const DataPacket& packet)
     stream << packet.chunk;
     return buffer;
 }
+
+
+HandshakePacket deserializePacket(QByteArray &buffer)
+{
+    HandshakePacket packet;
+    QDataStream stream(&buffer, QIODevice::ReadOnly);
+
+    stream >> packet.filename
+        >> packet.totalSize
+        >> packet.requestId
+        >> packet.protocolVersion;
+
+    return packet;
+}
+
+void deserializePacket(QByteArray &buffer, DataPacket& packet)
+{
+    QDataStream stream(&buffer, QIODevice::ReadOnly);
+    packet.chunk = buffer;
+}
 }

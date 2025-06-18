@@ -51,6 +51,13 @@ struct HandshakePacket {
     quint32 requestId;
     quint8 protocolVersion;
     QString speedHint;
+
+
+    void print() {
+        qDebug() <<
+            QString("HANDSHAKE:: fileName: %1, totalSize: %2, requestId: %3, protocolVersion: %4")
+                        .arg(filename).arg(totalSize).arg(requestId).arg(protocolVersion);
+    }
 };
 
 

@@ -13,6 +13,9 @@ namespace SlothPacketUtils {
     QByteArray serializePacket(const HandshakePacket& packet);
     QByteArray serializePacket(const DataPacket& packet);
 
+
+    HandshakePacket deserializePacket(QByteArray &buffer);
+    void deserializePacket(QByteArray &buffer, DataPacket& packet);
 }
 
 #endif // COMMON_H

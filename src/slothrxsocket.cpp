@@ -23,14 +23,17 @@ void SlothRxSocket::handleReadyRead()
         QNetworkDatagram datagram = receiveDatagram(4096);
         QByteArray buffer = datagram.data();
 
+        qDebug() << "Received buffer : " << buffer.toHex();
         QByteArray payload;
         PacketHeader header;
+        DataPacket dataPacket;
         bool success = SlothPacketUtils::parsePacketHeader(buffer, header, payload);
 
         if(!success) {
             qWarning() << "SlothRX: Checksum failed, dropping packet";
             continue;
         }
+        qDebug() << "payload: " << payload.toHex();
 
         switch(header.type) {
 
@@ -41,18 +44,44 @@ void SlothRxSocket::handleReadyRead()
             // as other party may send multiple duplicate packet of same request (to avoid loss)
 
             // after validation, set peer info
-
+            // before setting m_txAddress and m_txPort, make sure if you can accept the request
             m_txAddress = datagram.senderAddress();
             m_txPort = datagram.senderPort();
-            acknowledgeTxRequest(999);
+            handleHandshakePacket(payload);
             break;
 
+        case PacketType::DATA:
+            // data packet, write it to file
+
+            qDebug() << "SlothRx:: received data packet";
+            handlePacket(header, payload);
+
+            break;
 
         default:
             qDebug() << "SlothRx: Packet type not handled";
         }
     }
 }
+void SlothRxSocket::handleHandshakePacket(QByteArray buffer)
+{
+    qDebug() << "handling handshake packet";
+    HandshakePacket packet = SlothPacketUtils::deserializePacket(buffer);
+
+    packet.print();
+
+    // notify the application about the request
+    emit on_fileTxRequest(packet.filename, packet.totalSize, m_txAddress.toString());
+
+
+    m_filePath = packet.filename;
+
+    // just for testing we're auto accepting the handshake request
+    // in real case this we'll only acknowledge once user triggers the accept
+
+    acknowledgeTxRequest(packet.requestId);
+}
+
 
 bool SlothRxSocket::acknowledgeTxRequest(quint32 requestId)
 {
@@ -66,8 +95,39 @@ bool SlothRxSocket::acknowledgeTxRequest(quint32 requestId)
            << 0
            << ack.checksum;
 
+    // at this point, we are acknowledging the request
+    // we should prepare now for file writing
+
+    m_file.setFileName(m_filePath);
+    if(!m_file.open(OpenModeFlag::Truncate | OpenModeFlag::WriteOnly)) {
+        qDebug() << "Could not open file " << m_filePath;
+    } else {
+        qDebug() << "Opened Successfully file " << m_filePath;
+    }
+
     return transmitBuffer(buffer);
 }
+
+
+void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
+    DataPacket packet;
+    SlothPacketUtils::deserializePacket(payload, packet);
+    packet.header = header;
+
+    qDebug() << "handle Packet header: ";
+    header.print();
+
+    while(header.sequenceNumber == m_baseSeqNum) {
+        qDebug() << "Writing chunk to file";
+        m_file.write(payload);
+        m_baseSeqNum++;
+    }
+
+    m_recvWindow[header.sequenceNumber] = payload;
+
+
+}
+
 
 bool SlothRxSocket::transmitBuffer(const QByteArray& buffer)
 {

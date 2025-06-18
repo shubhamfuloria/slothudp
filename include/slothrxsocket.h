@@ -3,6 +3,9 @@
 
 #include <QObject>
 #include <QUdpSocket>
+#include <QFile>
+
+#include <include/types.h>
 
 class SlothRxSocket : public QUdpSocket
 {
@@ -20,7 +23,14 @@ private:
      */
     bool acknowledgeTxRequest(quint32 requestId);
 
+    /**
+     * @brief handleHandshakePacket
+     * @param buffer: buffer without packet header, HandshakePacket
+     */
+    void handleHandshakePacket(QByteArray buffer);
 
+
+    void handlePacket(PacketHeader header, QByteArray payload);
 
     /**
      * @brief transmitBuffer: Writes the buffer to the network to m_txAddress
@@ -31,6 +41,13 @@ private:
 
     QHostAddress m_txAddress;
     quint16 m_txPort;
+
+
+    QString m_filePath;
+    QFile m_file;
+
+    int m_baseSeqNum;
+    QMap<quint32, QByteArray>m_recvWindow;
 
 private slots:
     void handleReadyRead();
