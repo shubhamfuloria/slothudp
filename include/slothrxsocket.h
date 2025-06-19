@@ -39,6 +39,12 @@ private:
     bool transmitBuffer(const QByteArray& buffer);
 
 
+    void sendAcknowledgement();
+
+    QByteArray generateAckBitmap(quint32 base, int windowSize);
+    void sayByeToPeer(); // and tear down connections
+
+
     QHostAddress m_txAddress;
     quint16 m_txPort;
 
@@ -46,8 +52,11 @@ private:
     QString m_filePath;
     QFile m_file;
 
-    int m_baseSeqNum;
+    int m_baseAckSeqNum;
+    int m_baseWriteSeqNum;
+    int m_untrackedCount;
     QMap<quint32, QByteArray>m_recvWindow;
+    QSet<quint32> m_receivedSeqNums;
 
 private slots:
     void handleReadyRead();

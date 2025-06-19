@@ -16,6 +16,7 @@ namespace SlothPacketUtils {
 
     HandshakePacket deserializePacket(QByteArray &buffer);
     void deserializePacket(QByteArray &buffer, DataPacket& packet);
+    void deserializePacket(QByteArray &buffer, AckWindowPacket& packet);
 }
 
 #endif // COMMON_H

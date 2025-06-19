@@ -3,6 +3,7 @@
 
 #include <QVector>
 #include <QDebug>
+#include <QDataStream>
 
 enum class PacketType : quint8 {
     DATA = 0,
@@ -11,6 +12,7 @@ enum class PacketType : quint8 {
     HANDSHAKE = 3,
     HANDSHAKEACK = 4,
     FIN = 5,
+    BYE = 6
 };
 
 #pragma pack(push, 1)
@@ -35,6 +37,18 @@ struct PacketHeader {
                         .arg(payloadSize)
                         .arg(checksum);
     }
+
+    QByteArray serialize() {
+        QByteArray buffer;
+        QDataStream stream(&buffer, QIODevice::WriteOnly);
+
+        stream << static_cast<quint8>(type)
+               << sequenceNumber
+               << payloadSize
+               << checksum;
+
+        return buffer;
+    }
 };
 #pragma pack(pop)
 
@@ -57,6 +71,47 @@ struct HandshakePacket {
         qDebug() <<
             QString("HANDSHAKE:: fileName: %1, totalSize: %2, requestId: %3, protocolVersion: %4")
                         .arg(filename).arg(totalSize).arg(requestId).arg(protocolVersion);
+    }
+
+};
+
+struct AckWindowPacket {
+    PacketHeader header;
+    quint32 baseSeqNum;
+    quint8 bitmapLength;
+    QByteArray bitmap;
+
+    QByteArray serialize() {
+        QByteArray buffer;
+        QDataStream stream(&buffer, QIODevice::WriteOnly);
+
+        stream << header.serialize();
+        stream << baseSeqNum
+               << bitmapLength
+               << bitmap;
+
+        return buffer;
+    }
+
+    void print() {
+        qDebug() << QString("baseSeq: %1, bitMapLength: %2, bitmap: ")
+                        .arg(baseSeqNum).arg(bitmapLength);
+        qDebug() << bitmap;
+    }
+};
+
+struct NackPacket {
+    PacketHeader header;
+    QList<quint32> missingSeqNum;
+
+    QByteArray serialize() {
+        QByteArray buffer;
+        QDataStream stream(&buffer, QIODevice::WriteOnly);
+
+        stream << header.serialize();
+        stream << missingSeqNum;
+
+        return buffer;
     }
 };
 

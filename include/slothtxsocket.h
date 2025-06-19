@@ -26,6 +26,7 @@ public:
 
 private:
     void handleHandshakeAck(quint32 requestId);
+    void handleDataAck(PacketHeader header, QByteArray payload);
 
     DataPacket createDataPacket(int seqNum, const QByteArray& chunk);
 
@@ -34,6 +35,8 @@ private:
 
     void sendWindow();
     void sendPacket(DataPacket packet);
+    void sendEOFPacket();
+
 
     QByteArray readChunkFromFile();
     void resetFile();
@@ -63,10 +66,10 @@ private:
     // oldest unacknowledged packet
     int m_baseSeqNum;
     int m_nextSeqNum;
-    int m_chunkSize = 1024;
+    int m_chunkSize = 10;
     quint8 m_protoVer = 1;
     QMap<quint32, QByteArray>m_sendWindow;
-
+    QMap<quint32, QByteArray>m_inFlightWindow;
 
 
 

@@ -94,6 +94,10 @@ void SlothTxSocket::handleReadyRead()
             handleHandshakeAck(header.sequenceNumber);
             break;
 
+        case PacketType::ACK:
+            handleDataAck(header, payload);
+            break;
+
         default:
             qDebug() << "SlothTx:: received unexpected packet, dropping...";
         }
@@ -108,6 +112,34 @@ void SlothTxSocket::handleHandshakeAck(quint32 requestId)
     initiateFileTransfer();
 }
 
+void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
+{
+    AckWindowPacket packet;
+    SlothPacketUtils::deserializePacket(buffer, packet);
+
+    qDebug() << "Handling data acknowledgement";
+    packet.print();
+
+    quint32 base = packet.baseSeqNum;
+    QByteArray bitmap = packet.bitmap;
+
+    for(int i = 0; i < bitmap.size(); i++) {
+        quint8 byte = static_cast<quint8>(bitmap[i]);
+        for(int bit = 0; bit < 8; bit++) {
+            quint32 seq = base + i * 8 + bit;
+            bool isAcked = byte & (1 << (7 - bit));
+            if(isAcked) m_sendWindow.remove(seq);
+        }
+    }
+    qDebug() << "Sliding window";
+    //slide window
+    while (!m_sendWindow.contains(m_baseSeqNum) && m_baseSeqNum < m_nextSeqNum) {
+        ++m_baseSeqNum;
+    }
+
+    sendNextWindow();
+}
+
 bool SlothTxSocket::initiateFileTransfer()
 {
     m_file.setFileName(m_filePath);
@@ -118,7 +150,7 @@ bool SlothTxSocket::initiateFileTransfer()
 
     m_nextSeqNum = 0;
     m_baseSeqNum = 0;
-    m_windowSize = 10;
+    m_windowSize = 8;
 
     sendNextWindow();
     return true;
@@ -145,17 +177,30 @@ void SlothTxSocket::sendNextWindow()
 
 
         QByteArray buffer = SlothPacketUtils::serializePacket(packet);
-        qDebug() << "sending data packet " << chunk.toHex();
+        qDebug() << "sending data packet with seq " << m_nextSeqNum;
         packet.header.print();
         transmitBuffer(buffer);
 
         m_sendWindow[m_nextSeqNum] = buffer;
-
         ++m_nextSeqNum;
     }
 
     if (m_file.atEnd()) {
         qDebug() << "Reached end of file (EOF). Waiting for ACKs before sending FIN.";
+
+        qDebug() << "Sending EOF packet";
+        sendEOFPacket();
+        m_file.close();
+
     }
+}
+
+void SlothTxSocket::sendEOFPacket()
+{
+    PacketHeader header(PacketType::FIN, 0/*reqId*/, 0);
+    header.checksum = 0;
+    QByteArray buffer = header.serialize();
+
+    transmitBuffer(buffer);
 }
 

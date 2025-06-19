@@ -99,4 +99,12 @@ void deserializePacket(QByteArray &buffer, DataPacket& packet)
     QDataStream stream(&buffer, QIODevice::ReadOnly);
     packet.chunk = buffer;
 }
+
+void deserializePacket(QByteArray &buffer, AckWindowPacket& packet)
+{
+    QDataStream stream(&buffer, QIODevice::ReadOnly);
+    stream >> packet.baseSeqNum
+            >> packet.bitmapLength
+        >> packet.bitmap;
+}
 }
