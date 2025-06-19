@@ -56,6 +56,7 @@ private:
 
 
     void stopTransmission();
+    void handleBye();
 
     QString m_filePath;
     QString m_fileSize;
@@ -66,7 +67,7 @@ private:
     // oldest unacknowledged packet
     int m_baseSeqNum;
     int m_nextSeqNum;
-    int m_chunkSize = 10;
+    int m_chunkSize = 700;
     quint8 m_protoVer = 1;
     QMap<quint32, QByteArray>m_sendWindow;
     QMap<quint32, QByteArray>m_inFlightWindow;

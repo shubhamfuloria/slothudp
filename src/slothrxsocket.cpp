@@ -61,6 +61,7 @@ void SlothRxSocket::handleReadyRead()
             // we should send sender a confirmation packet and tear down connection
 
             m_file.close();
+            break;
 
         default:
             qDebug() << "SlothRx: Packet type not handled";
@@ -140,6 +141,10 @@ void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
     m_untrackedCount++;
     if(m_untrackedCount >= 8) {
         sendAcknowledgement();
+        while (m_receivedSeqNums.contains(m_baseAckSeqNum)) {
+            ++m_baseAckSeqNum;
+        }
+        m_untrackedCount = 0;
         m_baseAckSeqNum = m_baseWriteSeqNum;
     }
 }
@@ -197,8 +202,7 @@ bool SlothRxSocket::transmitBuffer(const QByteArray& buffer)
 QByteArray SlothRxSocket::generateAckBitmap(quint32 base, int windowSize)
 {
     QByteArray bitmap;
-    qDebug() << "Generating bitmap, m_receviedSeqNums ";
-    qDebug() << m_receivedSeqNums;
+    qDebug() << "Generating bitmap, m_receviedSeqNums size " << m_receivedSeqNums.size();
     for (int i = 0; i < windowSize; i += 8) {
         quint8 byte = 0;
         for (int bit = 0; bit < 8; ++bit) {
@@ -210,4 +214,11 @@ QByteArray SlothRxSocket::generateAckBitmap(quint32 base, int windowSize)
         bitmap.append(byte);
     }
     return bitmap;
+}
+
+void SlothRxSocket::sayByeToPeer()
+{
+    PacketHeader header(PacketType::BYE, 0/*send session id here*/, 0);
+    header.checksum = 0;
+    transmitBuffer(header.serialize());
 }

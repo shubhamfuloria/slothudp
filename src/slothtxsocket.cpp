@@ -98,6 +98,11 @@ void SlothTxSocket::handleReadyRead()
             handleDataAck(header, payload);
             break;
 
+        case PacketType::BYE:
+            // received has successfully received EOF packet and we should now close the connection
+            // before that make sure that we've received acknowledgment of all packets
+            handleBye();
+
         default:
             qDebug() << "SlothTx:: received unexpected packet, dropping...";
         }
@@ -150,7 +155,7 @@ bool SlothTxSocket::initiateFileTransfer()
 
     m_nextSeqNum = 0;
     m_baseSeqNum = 0;
-    m_windowSize = 8;
+    m_windowSize = 20;
 
     sendNextWindow();
     return true;
@@ -190,8 +195,6 @@ void SlothTxSocket::sendNextWindow()
 
         qDebug() << "Sending EOF packet";
         sendEOFPacket();
-        m_file.close();
-
     }
 }
 
@@ -202,5 +205,10 @@ void SlothTxSocket::sendEOFPacket()
     QByteArray buffer = header.serialize();
 
     transmitBuffer(buffer);
+}
+
+void SlothTxSocket::handleBye()
+{
+    // received has successfully
 }
 

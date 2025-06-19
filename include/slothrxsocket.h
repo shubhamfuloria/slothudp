@@ -41,6 +41,13 @@ private:
 
     void sendAcknowledgement();
 
+    /**
+     * @brief generateAckBitmap: Creates a ack bitmap starting from base. eg. if packet 3, 4, 6, 7 has been received
+     *                           base will be 3 and bitmap will be 11011 ( 27 )
+     * @param base
+     * @param windowSize
+     * @return
+     */
     QByteArray generateAckBitmap(quint32 base, int windowSize);
     void sayByeToPeer(); // and tear down connections
 

@@ -13,7 +13,7 @@ int main(int argc, char *argv[])
     SlothTxSocket txSocket;
     SlothRxSocket rxSocket;
 
-    txSocket.initiateHandshake("C:/Users/Shubham/Videos/login.jpg", 50, "127.0.0.1", 5000);
+    txSocket.initiateHandshake("C:/Users/Shubham/Videos/test.png", 50, "172.16.6.29", 5000);
 
     return a.exec();
 }
