@@ -17,6 +17,12 @@ enum class PacketType : quint8 {
     BYE = 6
 };
 
+enum class SessionState : quint8 {
+    NOTACTIVE = 0,
+    REQPENDING = 0,
+    ACTIVE
+};
+
 #pragma pack(push, 1)
 struct PacketHeader {
     PacketType type;

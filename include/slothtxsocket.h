@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QUdpSocket>
 #include <QFile>
+#include <QTimer>
 
 #include <include/types.h>
 
@@ -80,7 +81,18 @@ private:
     QMap<quint32, QByteArray>m_sendWindow;
     QMap<quint32, QByteArray>m_inFlightWindow;
 
+    quint32 m_activeSessionId;
+    SessionState m_sessionState = SessionState::NOTACTIVE;
 
+    /**
+     * @brief m_handshakeReqRetryCount: sender keeps trying to send handshake packet to client,
+     * to handle the packet loss of the handshake packet.
+     * server will try this many times before giving up
+     */
+    int m_handshakeReqRetryLimit = 5;
+    int m_handshakeReqRetryCount = 0;
+
+    QTimer* m_handshakeRetryTimer = nullptr;
 
 private slots:
     /**

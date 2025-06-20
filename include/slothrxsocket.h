@@ -80,6 +80,10 @@ private:
     quint32 m_highestSeqReceived = 0;
     bool m_nackDebounceScheduled = false;
 
+    quint32 m_activeSessionId = 0;
+    SessionState m_sessionState = SessionState::NOTACTIVE;
+
+
 private slots:
     void handleReadyRead();
     void handleNackTimeout();

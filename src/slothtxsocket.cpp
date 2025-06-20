@@ -47,9 +47,33 @@ void SlothTxSocket::initiateHandshake(
     packet.print();
 
     QByteArray buffer = SlothPacketUtils::serializePacket(packet);
+
+    // store session id, and mark session as not active
+    m_activeSessionId = packet.requestId;
+    m_sessionState = SessionState::REQPENDING;
+
+
     // send the buffer over to network
 
+
     transmitBuffer(buffer);
+
+
+    // retry handshake packet, to handle the case of handshake packet loss
+    m_handshakeRetryTimer = new QTimer(this);
+    m_handshakeReqRetryCount = 0;
+    connect(m_handshakeRetryTimer, &QTimer::timeout, [=]() {
+        if (++m_handshakeReqRetryCount >= m_handshakeReqRetryLimit) {
+            qWarning() << "Handshake retry limit reached. Giving up.";
+            m_handshakeRetryTimer->stop();
+            return;
+        }
+
+        qDebug() << "Retrying handshake... attempt" << m_handshakeReqRetryCount;
+        transmitBuffer(buffer);
+    });
+
+    m_handshakeRetryTimer->start(500);
 }
 
 
@@ -111,8 +135,20 @@ void SlothTxSocket::handleReadyRead()
 
 void SlothTxSocket::handleHandshakeAck(quint32 requestId)
 {
+
+    if(requestId != m_activeSessionId) {
+        qDebug() << "handshake acknowledgement from invalid session id, dropping...";
+        return;
+    }
     qDebug() << "Received handshake ack for request Id " << requestId;
-    // verify if it's a valid request id and start file transfer
+
+    // handshake retry timer may still be running now
+    if (m_handshakeRetryTimer) {
+        qDebug() << "Stopping handshake retry timer";
+        m_handshakeRetryTimer->stop();
+        m_handshakeRetryTimer->deleteLater();
+        m_handshakeRetryTimer = nullptr;
+    }
 
     initiateFileTransfer();
 }

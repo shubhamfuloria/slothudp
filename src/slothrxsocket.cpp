@@ -74,12 +74,37 @@ void SlothRxSocket::handleHandshakePacket(QByteArray buffer)
     qDebug() << "handling handshake packet";
     HandshakePacket packet = SlothPacketUtils::deserializePacket(buffer);
 
+    /*
+     * check if it's a duplicate handshake request, if so ignore it
+     * if it's a new handshake request, then reject it
+    */
+
+    if (m_sessionState != SessionState::NOTACTIVE) {
+        if (packet.requestId == m_activeSessionId) {
+            qDebug() << "Duplicate handshake packet received. Ignoring.";
+        } else {
+            qDebug() << "Another session is already active. Rejecting new handshake.";
+        }
+        return;
+    }
+
     packet.print();
+
+    /*
+     * We've successfully received the handshake packet, so application make this
+     * request id as session id with pending state.
+     * once application acknowledges the handshake request, the state gets changed
+     * to ACTIVE state
+     *
+    */
+
+    m_activeSessionId = packet.requestId;
+    m_sessionState = SessionState::REQPENDING;
 
     // notify the application about the request
     emit on_fileTxRequest(packet.filename, packet.totalSize, m_txAddress.toString());
 
-
+    // reset to initial state
     m_filePath = packet.filename;
     m_baseAckSeqNum = 0;
     m_baseWriteSeqNum = 0;
