@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QUdpSocket>
 #include <QFile>
+#include <QTimer>
 
 #include <include/types.h>
 
@@ -50,10 +51,13 @@ private:
      */
     QByteArray generateAckBitmap(quint32 base, int windowSize);
     void sayByeToPeer(); // and tear down connections
-
+    void scheduleNackDebounce();
+    void performNackDebounce();
+    void sendNack(QList<quint32> missing);
 
     QHostAddress m_txAddress;
     quint16 m_txPort;
+    uint m_windowSize = 8;
 
 
     QString m_filePath;
@@ -61,12 +65,24 @@ private:
 
     int m_baseAckSeqNum;
     int m_baseWriteSeqNum;
+
+    /**
+     * @brief m_untrackedCount represents packet which are received, but we haven't sent acknowledgment for them yet.
+     */
     int m_untrackedCount;
     QMap<quint32, QByteArray>m_recvWindow;
     QSet<quint32> m_receivedSeqNums;
 
+
+    QSet<quint32> m_pendingMissing;
+
+    QTimer m_nackTimer;
+    quint32 m_highestSeqReceived = 0;
+    bool m_nackDebounceScheduled = false;
+
 private slots:
     void handleReadyRead();
+    void handleNackTimeout();
 
 signals:
     void on_fileTxRequest(QString fileName, quint64 fileSize, QString hostAddress);

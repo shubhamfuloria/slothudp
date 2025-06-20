@@ -155,7 +155,7 @@ bool SlothTxSocket::initiateFileTransfer()
 
     m_nextSeqNum = 0;
     m_baseSeqNum = 0;
-    m_windowSize = 20;
+    m_windowSize = 10;
 
     sendNextWindow();
     return true;

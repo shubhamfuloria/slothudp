@@ -5,6 +5,8 @@
 #include <QDebug>
 #include <QDataStream>
 
+#include <QMap>
+
 enum class PacketType : quint8 {
     DATA = 0,
     ACK = 1,
@@ -30,9 +32,12 @@ struct PacketHeader {
         this->payloadSize = payloadSize;
     }
     void print() {
+
+        QMap<int,QString> names = {{0, "DATA"}, {1, "ACK"}, {2, "NACK"}, {3, "HANDSHAKE"},
+                                        {4, "HANDSHAKEACK"}, {5, "FIN"}, {6, "BYE"}};
         qDebug() <<
             QString("Packet Type: %1, Seq: %2, payloadSize: %3, checksum: %4")
-                        .arg(static_cast<quint8>(type))
+                        .arg(names[static_cast<int>(type)])
                         .arg(sequenceNumber)
                         .arg(payloadSize)
                         .arg(checksum);
@@ -90,7 +95,7 @@ struct AckWindowPacket {
                << bitmapLength
                << bitmap;
 
-        return buffer;
+      return buffer;
     }
 
     void print() {
@@ -100,16 +105,42 @@ struct AckWindowPacket {
     }
 };
 
+// struct NackPacket {
+//     PacketHeader header;
+//     QList<quint32> missingSeqNum;
+
+//     QByteArray serialize() {
+//         QByteArray buffer;
+//         QDataStream stream(&buffer, QIODevice::WriteOnly);
+
+//         stream << header.serialize();
+//         stream << missingSeqNum;
+
+//         return buffer;
+//     }
+// };
+
 struct NackPacket {
     PacketHeader header;
-    QList<quint32> missingSeqNum;
+    quint32 baseSeqNum;
+    quint8 bitmapLength;         // number of bytes in the bitmap
+    QByteArray bitmap;           // bits: 1 = missing, 0 = received
+
+
+    NackPacket(quint32 baseSeq, quint8 bitMapLength, QByteArray bitmap) {
+        this->baseSeqNum = baseSeq;
+        this->bitmapLength = bitMapLength;
+        this->bitmap = bitmap;
+    }
 
     QByteArray serialize() {
         QByteArray buffer;
         QDataStream stream(&buffer, QIODevice::WriteOnly);
 
         stream << header.serialize();
-        stream << missingSeqNum;
+        stream << baseSeqNum
+               << bitmapLength
+               << bitmap;
 
         return buffer;
     }

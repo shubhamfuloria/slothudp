@@ -64,8 +64,16 @@ private:
     QHostAddress m_destAddress;
     quint16 m_destPort;
     int m_windowSize;
-    // oldest unacknowledged packet
+
+    /**
+     * @brief m_baseSeqNum: stores oldest unacknowledged packet
+     */
     int m_baseSeqNum;
+
+    /**
+     * @brief m_nextSeqNum: points to next packet to send
+     * PS: we won't wait for all packets to be acked, we'll keep sending new packets
+     */
     int m_nextSeqNum;
     int m_chunkSize = 700;
     quint8 m_protoVer = 1;

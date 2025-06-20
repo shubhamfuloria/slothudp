@@ -107,4 +107,22 @@ void deserializePacket(QByteArray &buffer, AckWindowPacket& packet)
             >> packet.bitmapLength
         >> packet.bitmap;
 }
+
+
+QByteArray generateBitmapFromSet(quint32 base, int windowSize, const QSet<quint32>& relevantSeqNums)
+{
+    QByteArray bitmap;
+    for (int i = 0; i < windowSize; i += 8) {
+        quint8 byte = 0;
+        for (int bit = 0; bit < 8; ++bit) {
+            quint32 seq = base + i + bit;
+            if (relevantSeqNums.contains(seq)) {
+                byte |= (1 << (7 - bit));
+            }
+        }
+        bitmap.append(byte);
+    }
+    return bitmap;
+}
+
 }

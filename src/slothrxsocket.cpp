@@ -15,6 +15,7 @@ SlothRxSocket::SlothRxSocket() {
     }
 
     connect(this, &QUdpSocket::readyRead, this, &SlothRxSocket::handleReadyRead);
+    connect(&m_nackTimer, &QTimer::timeout, this, &SlothRxSocket::handleNackTimeout);
 }
 
 void SlothRxSocket::handleReadyRead()
@@ -113,6 +114,12 @@ bool SlothRxSocket::acknowledgeTxRequest(quint32 requestId)
         qDebug() << "Opened Successfully file " << m_filePath;
     }
 
+    /*
+     * Start NACK Timer
+     *
+    */
+
+    m_nackTimer.start(500);
     return transmitBuffer(buffer);
 }
 
@@ -123,15 +130,15 @@ void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
         qDebug() << "Already written packet " << header.sequenceNumber;
         return;
     }
+    m_highestSeqReceived = m_highestSeqReceived < header.sequenceNumber ? header.sequenceNumber : m_highestSeqReceived;
 
     m_recvWindow[header.sequenceNumber] = payload;
     m_receivedSeqNums.insert(header.sequenceNumber);
 
-    qDebug() << QString("m_recvWindow size: %1, m_baseWriteSeq: %2, m_untrackedCount: %3")
-                    .arg(m_recvWindow.size()).arg(m_baseWriteSeqNum).arg(m_untrackedCount);
+    // qDebug() << QString("m_recvWindow size: %1, m_baseWriteSeq: %2, m_untrackedCount: %3")
+    //                 .arg(m_recvWindow.size()).arg(m_baseWriteSeqNum).arg(m_untrackedCount);
 
     while(m_recvWindow.contains(m_baseWriteSeqNum)) {
-        qDebug() << "Writing chunk to file";
         QByteArray chunk = m_recvWindow[m_baseWriteSeqNum];
         m_file.write(chunk);
         m_recvWindow.remove(m_baseWriteSeqNum);
@@ -202,19 +209,85 @@ bool SlothRxSocket::transmitBuffer(const QByteArray& buffer)
 QByteArray SlothRxSocket::generateAckBitmap(quint32 base, int windowSize)
 {
     QByteArray bitmap;
-    qDebug() << "Generating bitmap, m_receviedSeqNums size " << m_receivedSeqNums.size();
     for (int i = 0; i < windowSize; i += 8) {
         quint8 byte = 0;
         for (int bit = 0; bit < 8; ++bit) {
             quint32 seq = base + i + bit;
-            if (m_receivedSeqNums.contains(seq)) {
-                byte |= (1 << (7 - bit));
+            bool received = m_receivedSeqNums.contains(seq);
+
+            if (received) {
+                byte |= (1 << (7 - bit));  // MSB-first
             }
         }
         bitmap.append(byte);
     }
     return bitmap;
 }
+
+void SlothRxSocket::handleNackTimeout()
+{
+    QSet<quint32> currentMissing;
+
+    for (quint32 i = m_baseAckSeqNum; i <= m_highestSeqReceived; ++i) {
+        if (!m_receivedSeqNums.contains(i)) {
+            currentMissing.insert(i);
+        }
+    }
+    // qDebug() << "Nack Timeout current missing: ";
+    // m_pendingMissing = currentMissing;
+    // scheduleNackDebounce();
+    // qDebug() << "handling nack timeout";
+}
+
+
+void SlothRxSocket::scheduleNackDebounce() {
+    if (m_nackDebounceScheduled) return;
+
+    m_nackDebounceScheduled = true;
+    QTimer::singleShot(100, this, &SlothRxSocket::performNackDebounce);
+}
+
+
+void SlothRxSocket::performNackDebounce() {
+    QSet<quint32> stillMissing;
+
+    for (quint32 seq : m_pendingMissing) {
+        if (!m_receivedSeqNums.contains(seq)) {
+            stillMissing.insert(seq);
+        }
+    }
+
+    if (!stillMissing.isEmpty()) {
+        qDebug() << "Sending debounced NACK for: " << stillMissing;
+        sendNack(stillMissing.toList());
+    }
+
+    m_nackDebounceScheduled = false;
+}
+
+
+void SlothRxSocket::sendNack(QList<quint32> missing)
+{
+    if (missing.isEmpty()) return;
+
+    QSet<quint32> missingSet = QSet<quint32>::fromList(missing);
+
+    quint32 base = *std::min_element(missing.begin(), missing.end());
+    int windowSize = m_windowSize;
+
+    QByteArray bitmap = SlothPacketUtils::generateBitmapFromSet(base, windowSize, missingSet);
+
+    NackPacket packet(base, bitmap.length(), bitmap);
+    packet.header.type = PacketType::NACK;
+    packet.header.sequenceNumber = 0;
+    packet.header.payloadSize = bitmap.length() + sizeof(quint32) + sizeof(quint8);
+
+
+    qDebug() << "Sending nack";
+    transmitBuffer(packet.serialize());
+
+}
+
 
 void SlothRxSocket::sayByeToPeer()
 {
