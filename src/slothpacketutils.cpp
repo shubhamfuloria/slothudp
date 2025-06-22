@@ -12,8 +12,10 @@ quint16 calculateChecksum(const QByteArray& data)
 
 bool parsePacketHeader(const QByteArray& buffer, PacketHeader& outHeader, QByteArray& outPayload)
 {
-    if (buffer.size() < 9) return false;
+    const int HEADER_SIZE = sizeof(PacketHeader);  // 11
+    if (buffer.size() < HEADER_SIZE) return false;
 
+    qDebug() << "received buffer: " << buffer.toHex();
     QDataStream stream(buffer);
     quint8 typeByte;
     stream >> typeByte;
@@ -21,62 +23,78 @@ bool parsePacketHeader(const QByteArray& buffer, PacketHeader& outHeader, QByteA
 
     stream >> outHeader.sequenceNumber
         >> outHeader.payloadSize
-        >> outHeader.checksum
-        >> outPayload;
+        >> outHeader.headerChecksum
+        >> outHeader.checksum;
 
-    int headerSize = 11;
+    outHeader.print();
+    outPayload = buffer.mid(PACKET_HEADER_SIZE, outHeader.payloadSize);
+    qDebug() << "outpayload: " << outPayload.toHex();
+    quint16 calculatedHeaderCheckSum = qChecksum(buffer, 7);
+    qDebug() << "calculated header checksum : " << calculatedHeaderCheckSum;
+    qDebug() << "received checksum : " << outHeader.headerChecksum;
 
-    if (buffer.size() < headerSize + outHeader.payloadSize) {
+    if (calculatedHeaderCheckSum != outHeader.headerChecksum) {
+        qDebug() << QString("header checksum didn't match ( calculated : %1, received: %2 ), dropping packet")
+                        .arg(calculatedHeaderCheckSum)
+                        .arg(outHeader.headerChecksum);
         return false;
     }
+
+    if (buffer.size() < PACKET_HEADER_SIZE + outHeader.payloadSize) {
+        return false;
+    }
+
     quint16 calculated = calculateChecksum(outPayload);
+    qDebug() << "calculated : " << calculated << ", received: " << outHeader.checksum;
     return calculated == outHeader.checksum;
 }
+
 
 QByteArray serializePacket(const HandshakePacket& packet)
 {
     QByteArray payload;
-    QDataStream stream(&payload, QIODevice::WriteOnly);
-    stream << packet.filename
-           << packet.totalSize
-           << packet.requestId
-           << packet.protocolVersion;
+    QDataStream payloadStream(&payload, QIODevice::WriteOnly);
 
-
-    // add header at the top of the packet
-    PacketHeader header;
-    header.type = PacketType::HANDSHAKE;
-    header.sequenceNumber = 0;
-    header.payloadSize = payload.size();
-    header.checksum = qChecksum(payload.constData(), payload.size());
-
-    QByteArray mainBuffer;
-    QDataStream mainStream(&mainBuffer, QIODevice::WriteOnly);
-
-    mainStream << static_cast<quint8>(header.type)
-               << header.sequenceNumber
-               << header.payloadSize
-               << header.checksum
-               << payload;
-
-    return mainBuffer;
-}
-
-QByteArray serializePacket(const DataPacket& packet)
-{
+    payloadStream << packet.filename
+                  << packet.totalSize
+                  << packet.requestId
+                  << packet.protocolVersion
+                  << packet.speedHint;
 
     QByteArray buffer;
     QDataStream stream(&buffer, QIODevice::WriteOnly);
 
-    stream << static_cast<quint8>(packet.header.type)
-           << packet.header.sequenceNumber
-           << packet.header.payloadSize
-           << packet.header.checksum;
+    PacketHeader header;
+    header.type = PacketType::HANDSHAKE;
+    header.sequenceNumber = 0;
+    header.payloadSize = payload.size();
+
+    stream << static_cast<quint8>(header.type)
+           << header.sequenceNumber
+           << header.payloadSize;
+
+    header.headerChecksum = qChecksum(buffer.constData(), 7);
+    header.checksum = qChecksum(payload.constData(), payload.size());
+
+    stream << header.headerChecksum
+           << header.checksum;
+
+    stream.writeRawData(payload.constData(), payload.size());
+
+    return buffer;
+}
 
 
+QByteArray serializePacket(DataPacket& packet)
+{
+    packet.header.checksum = qChecksum(packet.chunk.constData(), packet.chunk.size());
+    QByteArray headerBytes = packet.header.serialize(packet.header.checksum);
 
-    // serialize chunk
-    stream << packet.chunk;
+    QByteArray buffer;
+    QDataStream stream(&buffer, QIODevice::WriteOnly);
+    stream.writeRawData(headerBytes.constData(), headerBytes.size());
+    stream.writeRawData(packet.chunk.constData(), packet.chunk.size());
+
     return buffer;
 }
 

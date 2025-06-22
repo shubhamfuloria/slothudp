@@ -21,6 +21,7 @@ SlothRxSocket::SlothRxSocket() {
 void SlothRxSocket::handleReadyRead()
 {
     while(hasPendingDatagrams()) {
+        qDebug() << "RX received";
         QNetworkDatagram datagram = receiveDatagram(4096);
         QByteArray buffer = datagram.data();
 
@@ -119,15 +120,9 @@ void SlothRxSocket::handleHandshakePacket(QByteArray buffer)
 
 bool SlothRxSocket::acknowledgeTxRequest(quint32 requestId)
 {
-    PacketHeader ack(PacketType::HANDSHAKEACK, 1, 0);
-    ack.checksum = 0;
-
-    QByteArray buffer;
-    QDataStream stream(&buffer, QIODevice::WriteOnly);
-    stream << static_cast<quint8>(ack.type)
-           << requestId // send requestId as sequence number
-           << 0
-           << ack.checksum;
+    // prepare packet
+    PacketHeader ack(PacketType::HANDSHAKEACK, requestId, 0);
+    QByteArray buffer = ack.serialize(0); // no payload, hence 0 checksum
 
     // at this point, we are acknowledging the request
     // we should prepare now for file writing
@@ -144,7 +139,7 @@ bool SlothRxSocket::acknowledgeTxRequest(quint32 requestId)
      *
     */
 
-    m_nackTimer.start(500);
+    // // m_nackTimer.start(500);
     return transmitBuffer(buffer);
 }
 
@@ -186,32 +181,32 @@ void SlothRxSocket::sendAcknowledgement()
     QByteArray bitmap = generateAckBitmap(m_baseAckSeqNum, 8);
 
     AckWindowPacket packet;
-    packet.header.type = PacketType::ACK;
-    packet.header.sequenceNumber = 1;
+    QByteArray payload;
+    QDataStream stream(&payload, QIODevice::WriteOnly);
+    stream << packet.baseSeqNum
+           << static_cast<quint8>(bitmap.size());
+    stream.writeRawData(bitmap.constData(), bitmap.size());
+
+    packet.header = PacketHeader(PacketType::ACK, 1, payload.size());
     packet.baseSeqNum = m_baseAckSeqNum;
     packet.bitmapLength = bitmap.size();
     packet.bitmap = bitmap;
-    packet.header.payloadSize = bitmap.size() + sizeof(quint8);
-
-    QByteArray payload;
-    QDataStream stream(&payload, QIODevice::WriteOnly);
-
-    stream << m_baseAckSeqNum
-           << static_cast<quint8>(bitmap.size())
-           << bitmap;
-
     packet.header.checksum = qChecksum(payload.constData(), payload.size());
 
-    QByteArray full;
-    QDataStream fullStream(&full, QIODevice::WriteOnly);
-    fullStream << static_cast<quint8>(packet.header.type)
-               << packet.header.sequenceNumber
-               << packet.header.payloadSize
-               << packet.header.checksum
-               << payload;
+    QByteArray fullBuffer;
+    QDataStream fullStream(&fullBuffer, QIODevice::WriteOnly);
 
-    writeDatagram(full, m_txAddress, m_txPort);
-    qDebug() << "ACK sent for base" << m_baseAckSeqNum << "bitmap size " << bitmap.size();
+    // write header
+    fullStream << static_cast<quint8>(packet.header.type)
+           << packet.header.sequenceNumber
+           << packet.header.payloadSize;
+
+    packet.header.headerChecksum = qChecksum(fullBuffer.constData(), 7);
+    fullStream << packet.header.headerChecksum
+           << packet.header.checksum;
+
+    fullStream.writeRawData(payload.constData(), payload.size());
+    transmitBuffer(fullBuffer);
 }
 
 bool SlothRxSocket::transmitBuffer(const QByteArray& buffer)
@@ -258,10 +253,10 @@ void SlothRxSocket::handleNackTimeout()
             currentMissing.insert(i);
         }
     }
-    // qDebug() << "Nack Timeout current missing: ";
-    // m_pendingMissing = currentMissing;
-    // scheduleNackDebounce();
-    // qDebug() << "handling nack timeout";
+    qDebug() << "Nack Timeout current missing: ";
+    m_pendingMissing = currentMissing;
+    scheduleNackDebounce();
+    qDebug() << "handling nack timeout";
 }
 
 
@@ -302,15 +297,35 @@ void SlothRxSocket::sendNack(QList<quint32> missing)
 
     QByteArray bitmap = SlothPacketUtils::generateBitmapFromSet(base, windowSize, missingSet);
 
-    NackPacket packet(base, bitmap.length(), bitmap);
+    NackPacket packet;
     packet.header.type = PacketType::NACK;
-    packet.header.sequenceNumber = 0;
-    packet.header.payloadSize = bitmap.length() + sizeof(quint32) + sizeof(quint8);
+    packet.header.sequenceNumber = 1;
+
+    packet.baseSeqNum = base;
+    packet.bitmapLength = bitmap.size();
+    packet.bitmap = bitmap;
+    packet.header.payloadSize = bitmap.size() + sizeof(quint8) + sizeof(quint32);
 
 
-    qDebug() << "Sending nack";
-    transmitBuffer(packet.serialize());
+    QByteArray payload;
+    QDataStream stream(&payload, QIODevice::WriteOnly);
 
+    stream << packet.baseSeqNum
+           << static_cast<quint8>(bitmap.size())
+           << bitmap;
+
+    packet.header.checksum = qChecksum(payload.constData(), payload.size());
+
+
+    QByteArray full;
+    QDataStream fullStream(&full, QIODevice::WriteOnly);
+    fullStream << static_cast<quint8>(packet.header.type)
+               << packet.header.sequenceNumber
+               << packet.header.payloadSize
+               << packet.header.checksum
+               << payload;
+
+    transmitBuffer(full);
 }
 
 

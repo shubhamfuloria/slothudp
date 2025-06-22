@@ -54,8 +54,6 @@ void SlothTxSocket::initiateHandshake(
 
 
     // send the buffer over to network
-
-
     transmitBuffer(buffer);
 
 
@@ -73,7 +71,7 @@ void SlothTxSocket::initiateHandshake(
         transmitBuffer(buffer);
     });
 
-    m_handshakeRetryTimer->start(500);
+    // m_handshakeRetryTimer->start(500);
 }
 
 
@@ -97,6 +95,7 @@ bool SlothTxSocket::transmitBuffer(const QByteArray& buffer)
 void SlothTxSocket::handleReadyRead()
 {
     while(hasPendingDatagrams()) {
+        qDebug() << "TX received";
         QNetworkDatagram datagram = receiveDatagram(4096);
         // process the datagram
         QByteArray buffer = datagram.data();
@@ -199,28 +198,38 @@ bool SlothTxSocket::initiateFileTransfer()
 
 void SlothTxSocket::sendNextWindow()
 {
+    qDebug() << "Sending next window";
     if (!m_file.isOpen() || !m_file.isReadable()) {
         qWarning() << "File not open for reading!";
         return;
     }
-
+    qDebug() << m_nextSeqNum << " \t " << m_baseSeqNum << " \t " << m_windowSize;
     while ((m_nextSeqNum < m_baseSeqNum + m_windowSize) && !m_file.atEnd()) {
         QByteArray chunk = m_file.read(m_chunkSize);
 
 
         DataPacket packet;
-        packet.header.sequenceNumber = m_nextSeqNum;
-        packet.header.type = PacketType::DATA;
-        packet.header.payloadSize = chunk.size();
+        packet.header = PacketHeader(PacketType::DATA, m_nextSeqNum, chunk.size());
         packet.header.checksum = qChecksum(chunk.constData(), packet.header.payloadSize);
-
         packet.chunk = chunk;
 
 
         QByteArray buffer = SlothPacketUtils::serializePacket(packet);
-        qDebug() << "sending data packet with seq " << m_nextSeqNum;
+
         packet.header.print();
+
         transmitBuffer(buffer);
+
+
+        qDebug() << "deserializing buffer, we should get same packet";
+
+        QDataStream s2(&buffer, QIODevice::ReadOnly);
+        quint8  type;
+        s2 >> type;
+        PacketHeader header;
+        s2 >> header.sequenceNumber >> header.payloadSize >> header.headerChecksum >> header.checksum;
+
+        header.print();
 
         m_sendWindow[m_nextSeqNum] = buffer;
         ++m_nextSeqNum;

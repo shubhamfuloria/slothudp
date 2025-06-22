@@ -76,7 +76,7 @@ private:
      * PS: we won't wait for all packets to be acked, we'll keep sending new packets
      */
     int m_nextSeqNum;
-    int m_chunkSize = 700;
+    int m_chunkSize = 10;
     quint8 m_protoVer = 1;
     QMap<quint32, QByteArray>m_sendWindow;
     QMap<quint32, QByteArray>m_inFlightWindow;
