@@ -121,11 +121,15 @@ void SlothTxSocket::handleReadyRead()
             handleDataAck(header, payload);
             break;
 
+        case PacketType::NACK:
+            handleNack(header, payload);
+            break;
+
         case PacketType::BYE:
             // received has successfully received EOF packet and we should now close the connection
             // before that make sure that we've received acknowledgment of all packets
             handleBye();
-
+            break;
 
         default:
             qDebug() << "SlothTx:: received unexpected packet, dropping...";
@@ -157,14 +161,9 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
 {
     AckWindowPacket packet;
     SlothPacketUtils::deserializePacket(buffer, packet);
-
-    qDebug() << "Handling data acknowledgement";
-    packet.print();
-    // qDebug() << "buffer: " << buffer.toHex();
     quint32 base = packet.baseSeqNum;
     QByteArray bitmap = packet.bitmap;
-    int count = 0;
-    // qDebug() << "bhai bitmap size is: " << bitmap.size();
+
     for(int i = 0; i < bitmap.size(); i++) {
         quint8 byte = static_cast<quint8>(bitmap[i]);
         for(int bit = 0; bit < 8; bit++) {
@@ -172,17 +171,37 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
             bool isAcked = byte & (1 << (7 - bit));
             if(isAcked) {
                 m_sendWindow.remove(seq);
-                count++;
             }
         }
     }
     while (!m_sendWindow.contains(m_baseSeqNum) && m_baseSeqNum < m_nextSeqNum) {
         ++m_baseSeqNum;
     }
-    qDebug() << "loop ran time: isAcked " << count;
 
     sendNextWindow();
 }
+
+void SlothTxSocket::handleNack(PacketHeader header, QByteArray buffer)
+{
+    NackPacket packet;
+    SlothPacketUtils::deserializePacket(buffer, packet);
+
+    quint32 base = packet.baseSeqNum;
+    QByteArray bitmap = packet.bitmap;
+
+    for (int i = 0; i < bitmap.size(); ++i) {
+        quint8 byte = static_cast<quint8>(bitmap[i]);
+        for (int bit = 0; bit < 8; ++bit) {
+            quint32 seq = base + i * 8 + bit;
+            if (byte & (1 << (7 - bit))) {
+                m_nackWindow.insert(seq);
+            }
+        }
+    }
+    qDebug() << "handling NACK, missing packets: " << m_nackWindow;
+    sendNextWindow();
+}
+
 
 bool SlothTxSocket::initiateFileTransfer()
 {
@@ -208,7 +227,21 @@ void SlothTxSocket::sendNextWindow()
         return;
     }
 
-    while ((m_nextSeqNum < m_baseSeqNum + m_windowSize) && !m_file.atEnd()) {
+    int packetSent = 0;
+
+    // send nack items
+    for(quint32 seq : qAsConst(m_nackWindow)) {
+        // assuming nack packet is already present in m_sendWindow
+        if(m_sendWindow.contains(seq)) {
+            // this should be complete buffer including all checksum and all
+            QByteArray buffer = m_sendWindow[seq];
+            transmitBuffer(buffer);
+            packetSent++;
+        }
+    }
+    m_nackWindow.clear();
+
+    while ((m_nextSeqNum < m_baseSeqNum + m_windowSize) && packetSent < m_windowSize && !m_file.atEnd()) {
         QByteArray chunk = m_file.read(m_chunkSize);
 
 
@@ -217,15 +250,13 @@ void SlothTxSocket::sendNextWindow()
         packet.header.checksum = qChecksum(chunk.constData(), packet.header.payloadSize);
         packet.chunk = chunk;
 
-
         QByteArray buffer = SlothPacketUtils::serializePacket(packet);
-
-        packet.header.print();
 
         transmitBuffer(buffer);
 
         m_sendWindow[m_nextSeqNum] = buffer;
         ++m_nextSeqNum;
+        ++packetSent;
     }
 
     if (m_file.atEnd()) {
@@ -235,6 +266,14 @@ void SlothTxSocket::sendNextWindow()
         sendEOFPacket();
     }
 }
+
+// void SlothTxSocket::sendPacket(DataPacket& packet)
+// {
+
+//     QByteArray buffer = SlothPacketUtils::serializePacket(packet);
+
+//     transmitBuffer(buffer);
+// }
 
 void SlothTxSocket::sendEOFPacket()
 {

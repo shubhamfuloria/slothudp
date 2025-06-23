@@ -19,6 +19,9 @@ namespace SlothPacketUtils {
     void deserializePacket(QByteArray &buffer, AckWindowPacket& packet);
 
     QByteArray generateBitmapFromSet(quint32 base, int windowSize, const QSet<quint32>& seqs);
+
+
+    void deserializePacket(QByteArray &buffer, NackPacket& packet);
 }
 
 #endif // COMMON_H

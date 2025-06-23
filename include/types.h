@@ -87,7 +87,6 @@ struct PacketHeader {
         stream << headerChecksum
                << checksum;
 
-        qDebug() << "serializing with headerChecksum: " << headerChecksum;
         return buffer;
     }
 

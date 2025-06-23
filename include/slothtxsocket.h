@@ -28,6 +28,7 @@ public:
 private:
     void handleHandshakeAck(quint32 requestId);
     void handleDataAck(PacketHeader header, QByteArray payload);
+    void handleNack(PacketHeader header, QByteArray buffer);
 
     DataPacket createDataPacket(int seqNum, const QByteArray& chunk);
 
@@ -35,7 +36,7 @@ private:
     void sendNextWindow();
 
     void sendWindow();
-    void sendPacket(DataPacket packet);
+    void sendPacket(DataPacket& packet);
     void sendEOFPacket();
 
 
@@ -80,6 +81,7 @@ private:
     quint8 m_protoVer = 1;
     QMap<quint32, QByteArray>m_sendWindow;
     QMap<quint32, QByteArray>m_inFlightWindow;
+    QSet<quint32> m_nackWindow; // contains nack ids received from client
 
     quint32 m_activeSessionId;
     SessionState m_sessionState = SessionState::NOTACTIVE;

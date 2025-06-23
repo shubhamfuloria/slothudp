@@ -129,19 +129,35 @@ void deserializePacket(QByteArray &buffer, AckWindowPacket& packet)
     packet.baseSeqNum = baseSeqNum;
     packet.bitmapLength = bitmapLength;
 
-    qDebug() << "deserialize ack packet buffer: " << buffer.toHex();
     packet.bitmap.resize(bitmapLength);
     stream.readRawData(packet.bitmap.data(), bitmapLength);
-
-    qDebug() << "Server ########## baseSeq:" << packet.baseSeqNum;
-    qDebug() << "bitmapLength:" << packet.bitmapLength;
 
     QString bitString;
     for (int i = 0; i < packet.bitmap.size(); ++i) {
         quint8 byte = static_cast<quint8>(packet.bitmap[i]);
         bitString += QString("%1").arg(byte, 8, 2, QChar('0')) + " ";
     }
-    qDebug() << "bitmap:" << bitString.trimmed();
+}
+
+void deserializePacket(QByteArray &buffer, NackPacket& packet)
+{
+    QDataStream stream(&buffer, QIODevice::ReadOnly);
+
+    quint32 baseSeqNum;
+    quint8 bitmapLength;
+
+    stream >> baseSeqNum;
+
+    // Read 1 byte manually for bitmapLength
+    char lenByte;
+    stream.readRawData(&lenByte, 1);
+    bitmapLength = static_cast<quint8>(lenByte);
+
+    packet.baseSeqNum = baseSeqNum;
+    packet.bitmapLength = bitmapLength;
+
+    packet.bitmap.resize(bitmapLength);
+    stream.readRawData(packet.bitmap.data(), bitmapLength);
 }
 
 
