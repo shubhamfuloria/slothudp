@@ -15,7 +15,6 @@ bool parsePacketHeader(const QByteArray& buffer, PacketHeader& outHeader, QByteA
     const int HEADER_SIZE = sizeof(PacketHeader);  // 11
     if (buffer.size() < HEADER_SIZE) return false;
 
-    qDebug() << "received buffer: " << buffer.toHex();
     QDataStream stream(buffer);
     quint8 typeByte;
     stream >> typeByte;
@@ -28,11 +27,7 @@ bool parsePacketHeader(const QByteArray& buffer, PacketHeader& outHeader, QByteA
 
     outHeader.print();
     outPayload = buffer.mid(PACKET_HEADER_SIZE, outHeader.payloadSize);
-    qDebug() << "outpayload: " << outPayload.toHex();
     quint16 calculatedHeaderCheckSum = qChecksum(buffer, 7);
-    qDebug() << "calculated header checksum : " << calculatedHeaderCheckSum;
-    qDebug() << "received checksum : " << outHeader.headerChecksum;
-
     if (calculatedHeaderCheckSum != outHeader.headerChecksum) {
         qDebug() << QString("header checksum didn't match ( calculated : %1, received: %2 ), dropping packet")
                         .arg(calculatedHeaderCheckSum)
@@ -45,7 +40,6 @@ bool parsePacketHeader(const QByteArray& buffer, PacketHeader& outHeader, QByteA
     }
 
     quint16 calculated = calculateChecksum(outPayload);
-    qDebug() << "calculated : " << calculated << ", received: " << outHeader.checksum;
     return calculated == outHeader.checksum;
 }
 
@@ -121,9 +115,33 @@ void deserializePacket(QByteArray &buffer, DataPacket& packet)
 void deserializePacket(QByteArray &buffer, AckWindowPacket& packet)
 {
     QDataStream stream(&buffer, QIODevice::ReadOnly);
-    stream >> packet.baseSeqNum
-            >> packet.bitmapLength
-        >> packet.bitmap;
+
+    quint32 baseSeqNum;
+    quint8 bitmapLength;
+
+    stream >> baseSeqNum;
+
+    // Read 1 byte manually for bitmapLength
+    char lenByte;
+    stream.readRawData(&lenByte, 1);
+    bitmapLength = static_cast<quint8>(lenByte);
+
+    packet.baseSeqNum = baseSeqNum;
+    packet.bitmapLength = bitmapLength;
+
+    qDebug() << "deserialize ack packet buffer: " << buffer.toHex();
+    packet.bitmap.resize(bitmapLength);
+    stream.readRawData(packet.bitmap.data(), bitmapLength);
+
+    qDebug() << "Server ########## baseSeq:" << packet.baseSeqNum;
+    qDebug() << "bitmapLength:" << packet.bitmapLength;
+
+    QString bitString;
+    for (int i = 0; i < packet.bitmap.size(); ++i) {
+        quint8 byte = static_cast<quint8>(packet.bitmap[i]);
+        bitString += QString("%1").arg(byte, 8, 2, QChar('0')) + " ";
+    }
+    qDebug() << "bitmap:" << bitString.trimmed();
 }
 
 

@@ -71,7 +71,7 @@ void SlothTxSocket::initiateHandshake(
         transmitBuffer(buffer);
     });
 
-    // m_handshakeRetryTimer->start(500);
+    m_handshakeRetryTimer->start(500);
 }
 
 
@@ -126,6 +126,7 @@ void SlothTxSocket::handleReadyRead()
             // before that make sure that we've received acknowledgment of all packets
             handleBye();
 
+
         default:
             qDebug() << "SlothTx:: received unexpected packet, dropping...";
         }
@@ -159,23 +160,26 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
 
     qDebug() << "Handling data acknowledgement";
     packet.print();
-
+    // qDebug() << "buffer: " << buffer.toHex();
     quint32 base = packet.baseSeqNum;
     QByteArray bitmap = packet.bitmap;
-
+    int count = 0;
+    // qDebug() << "bhai bitmap size is: " << bitmap.size();
     for(int i = 0; i < bitmap.size(); i++) {
         quint8 byte = static_cast<quint8>(bitmap[i]);
         for(int bit = 0; bit < 8; bit++) {
             quint32 seq = base + i * 8 + bit;
             bool isAcked = byte & (1 << (7 - bit));
-            if(isAcked) m_sendWindow.remove(seq);
+            if(isAcked) {
+                m_sendWindow.remove(seq);
+                count++;
+            }
         }
     }
-    qDebug() << "Sliding window";
-    //slide window
     while (!m_sendWindow.contains(m_baseSeqNum) && m_baseSeqNum < m_nextSeqNum) {
         ++m_baseSeqNum;
     }
+    qDebug() << "loop ran time: isAcked " << count;
 
     sendNextWindow();
 }
@@ -190,7 +194,7 @@ bool SlothTxSocket::initiateFileTransfer()
 
     m_nextSeqNum = 0;
     m_baseSeqNum = 0;
-    m_windowSize = 10;
+    m_windowSize = 8;
 
     sendNextWindow();
     return true;
@@ -203,7 +207,7 @@ void SlothTxSocket::sendNextWindow()
         qWarning() << "File not open for reading!";
         return;
     }
-    qDebug() << m_nextSeqNum << " \t " << m_baseSeqNum << " \t " << m_windowSize;
+
     while ((m_nextSeqNum < m_baseSeqNum + m_windowSize) && !m_file.atEnd()) {
         QByteArray chunk = m_file.read(m_chunkSize);
 
@@ -220,17 +224,6 @@ void SlothTxSocket::sendNextWindow()
 
         transmitBuffer(buffer);
 
-
-        qDebug() << "deserializing buffer, we should get same packet";
-
-        QDataStream s2(&buffer, QIODevice::ReadOnly);
-        quint8  type;
-        s2 >> type;
-        PacketHeader header;
-        s2 >> header.sequenceNumber >> header.payloadSize >> header.headerChecksum >> header.checksum;
-
-        header.print();
-
         m_sendWindow[m_nextSeqNum] = buffer;
         ++m_nextSeqNum;
     }
@@ -245,9 +238,8 @@ void SlothTxSocket::sendNextWindow()
 
 void SlothTxSocket::sendEOFPacket()
 {
-    PacketHeader header(PacketType::FIN, 0/*reqId*/, 0);
-    header.checksum = 0;
-    QByteArray buffer = header.serialize();
+    PacketHeader header(PacketType::FIN, m_activeSessionId/*reqId*/, 0);
+    QByteArray buffer = header.serialize(0);
 
     transmitBuffer(buffer);
 }
