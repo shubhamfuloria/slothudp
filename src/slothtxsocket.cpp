@@ -43,8 +43,8 @@ void SlothTxSocket::initiateHandshake(
     packet.requestId = QRandomGenerator::global()->generate();
     packet.protocolVersion = m_protoVer;
 
-    qDebug() << "SlothTX:: packet ";
-    packet.print();
+    qDebug() << "SlothTX:: packet ===>";
+    // packet.print();
 
     QByteArray buffer = SlothPacketUtils::serializePacket(packet);
 
@@ -164,6 +164,8 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
     quint32 base = packet.baseSeqNum;
     QByteArray bitmap = packet.bitmap;
 
+    qDebug() << "SlothTX:: <=== ACK";
+    SlothPacketUtils::logBitMap(bitmap);
     for(int i = 0; i < bitmap.size(); i++) {
         quint8 byte = static_cast<quint8>(bitmap[i]);
         for(int bit = 0; bit < 8; bit++) {
@@ -188,7 +190,8 @@ void SlothTxSocket::handleNack(PacketHeader header, QByteArray buffer)
 
     quint32 base = packet.baseSeqNum;
     QByteArray bitmap = packet.bitmap;
-
+    qDebug() << "SlothTx <=== NACK";
+    SlothPacketUtils::logBitMap(bitmap);
     for (int i = 0; i < bitmap.size(); ++i) {
         quint8 byte = static_cast<quint8>(bitmap[i]);
         for (int bit = 0; bit < 8; ++bit) {
@@ -198,7 +201,6 @@ void SlothTxSocket::handleNack(PacketHeader header, QByteArray buffer)
             }
         }
     }
-    qDebug() << "handling NACK, missing packets: " << m_nackWindow;
     sendNextWindow();
 }
 
@@ -235,12 +237,15 @@ void SlothTxSocket::sendNextWindow()
         if(m_sendWindow.contains(seq)) {
             // this should be complete buffer including all checksum and all
             QByteArray buffer = m_sendWindow[seq];
+            qDebug() << "SlothTX: DATA(n) seq " << seq << " ====> ";
+
             transmitBuffer(buffer);
             packetSent++;
         }
     }
     m_nackWindow.clear();
-
+    qDebug() << QString("m_nextSeqNum: %1, m_baseSeqNum: %2, m_windowSize: %3, packetSet: %4")
+                    .arg(m_nextSeqNum).arg(m_baseSeqNum).arg(m_windowSize).arg(packetSent);
     while ((m_nextSeqNum < m_baseSeqNum + m_windowSize) && packetSent < m_windowSize && !m_file.atEnd()) {
         QByteArray chunk = m_file.read(m_chunkSize);
 
@@ -251,6 +256,8 @@ void SlothTxSocket::sendNextWindow()
         packet.chunk = chunk;
 
         QByteArray buffer = SlothPacketUtils::serializePacket(packet);
+
+        qDebug() << "SlothTX: DATA seq " << packet.header.sequenceNumber << " ====> ";
 
         transmitBuffer(buffer);
 

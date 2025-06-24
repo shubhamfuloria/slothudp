@@ -22,6 +22,7 @@ namespace SlothPacketUtils {
 
 
     void deserializePacket(QByteArray &buffer, NackPacket& packet);
+    void logBitMap(QByteArray bitmap);
 }
 
 #endif // COMMON_H

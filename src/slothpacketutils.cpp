@@ -25,7 +25,6 @@ bool parsePacketHeader(const QByteArray& buffer, PacketHeader& outHeader, QByteA
         >> outHeader.headerChecksum
         >> outHeader.checksum;
 
-    outHeader.print();
     outPayload = buffer.mid(PACKET_HEADER_SIZE, outHeader.payloadSize);
     quint16 calculatedHeaderCheckSum = qChecksum(buffer, 7);
     if (calculatedHeaderCheckSum != outHeader.headerChecksum) {
@@ -175,6 +174,19 @@ QByteArray generateBitmapFromSet(quint32 base, int windowSize, const QSet<quint3
         bitmap.append(byte);
     }
     return bitmap;
+}
+
+void logBitMap(QByteArray bitmap) {
+    QStringList bitStrings;
+    for (int i = 0; i < bitmap.size(); ++i) {
+        quint8 byte = static_cast<quint8>(bitmap[i]);
+        QString bits;
+        for (int b = 7; b >= 0; --b) {
+            bits += (byte & (1 << b)) ? '1' : '0';
+        }
+        bitStrings << bits;
+    }
+    qDebug() << "bitmap: " << bitStrings.join(" ");
 }
 
 }

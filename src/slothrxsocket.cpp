@@ -21,7 +21,6 @@ SlothRxSocket::SlothRxSocket() {
 void SlothRxSocket::handleReadyRead()
 {
     while(hasPendingDatagrams()) {
-        qDebug() << "RX received";
         QNetworkDatagram datagram = receiveDatagram(4096);
         QByteArray buffer = datagram.data();
 
@@ -53,7 +52,7 @@ void SlothRxSocket::handleReadyRead()
         case PacketType::DATA:
             // data packet, write it to file
 
-            qDebug() << "SlothRx:: received data packet";
+            // qDebug() << "SlothRx:: received data packet";
             handlePacket(header, payload);
 
             break;
@@ -158,6 +157,8 @@ void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
     // qDebug() << QString("m_recvWindow size: %1, m_baseWriteSeq: %2, m_untrackedCount: %3")
     //                 .arg(m_recvWindow.size()).arg(m_baseWriteSeqNum).arg(m_untrackedCount);
 
+    qDebug() << "SlothRX <=== DATA seq " << header.sequenceNumber;
+
     while(m_recvWindow.contains(m_baseWriteSeqNum)) {
         QByteArray chunk = m_recvWindow[m_baseWriteSeqNum];
         m_file.write(chunk);
@@ -166,8 +167,7 @@ void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
     }
 
     m_untrackedCount++;
-    qDebug() << "untracked cont: " << m_untrackedCount;
-    qDebug() << "m_baseAckSeqNum: " << m_baseAckSeqNum;
+
     if(m_untrackedCount >= 8) {
         qDebug() << "Sending acknowledgement";
         sendAcknowledgement();
@@ -177,7 +177,6 @@ void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
         m_untrackedCount = 0;
         // m_baseAckSeqNum = m_baseWriteSeqNum;
     }
-    qDebug() << "m_baseAckSeqNum: " << m_baseAckSeqNum;
 }
 
 void SlothRxSocket::sendAcknowledgement()
@@ -215,6 +214,9 @@ void SlothRxSocket::sendAcknowledgement()
     PacketHeader header;
     QByteArray parsedPayload;
     SlothPacketUtils::parsePacketHeader(fullBuffer, header, parsedPayload);
+
+    qDebug() << "SlothRX ACK  with base " << m_baseAckSeqNum << " ===> ";
+    SlothPacketUtils::logBitMap(bitmap);
 
     // Transmit the full serialized buffer
     transmitBuffer(fullBuffer);
@@ -264,10 +266,9 @@ void SlothRxSocket::handleNackTimeout()
             currentMissing.insert(i);
         }
     }
-    qDebug() << "Nack Timeout current missing: ";
+    // qDebug() << "Nack Timeout current missing: " << currentMissing;
     m_pendingMissing = currentMissing;
     scheduleNackDebounce();
-    qDebug() << "handling nack timeout";
 }
 
 
@@ -289,7 +290,6 @@ void SlothRxSocket::performNackDebounce() {
     }
 
     if (!stillMissing.isEmpty()) {
-        qDebug() << "Sending debounced NACK for: " << stillMissing;
         sendNack(stillMissing.toList());
     }
 
@@ -304,7 +304,7 @@ void SlothRxSocket::sendNack(QList<quint32> missing)
     QSet<quint32> missingSet = QSet<quint32>::fromList(missing);
     quint32 base = *std::min_element(missing.begin(), missing.end());
     int windowSize = m_windowSize;
-
+    qDebug() << "Sending NACK for base " << base << missing;
     QByteArray bitmap = SlothPacketUtils::generateBitmapFromSet(base, windowSize, missingSet);
 
     NackPacket packet;
