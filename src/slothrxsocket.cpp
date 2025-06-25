@@ -16,6 +16,7 @@ SlothRxSocket::SlothRxSocket() {
 
     connect(this, &QUdpSocket::readyRead, this, &SlothRxSocket::handleReadyRead);
     connect(&m_nackTimer, &QTimer::timeout, this, &SlothRxSocket::handleNackTimeout);
+    connect(&m_feedbackTimer, &QTimer::timeout, this, &SlothRxSocket::handleFeedbackTimeout);
 }
 
 void SlothRxSocket::handleReadyRead()
@@ -139,6 +140,7 @@ bool SlothRxSocket::acknowledgeTxRequest(quint32 requestId)
     */
 
     m_nackTimer.start(500);
+    m_feedbackTimer.start(500);
     return transmitBuffer(buffer);
 }
 
@@ -170,10 +172,12 @@ void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
 
     if(m_untrackedCount >= 8) {
         qDebug() << "Sending acknowledgement";
-        sendAcknowledgement();
+
         while (m_receivedSeqNums.contains(m_baseAckSeqNum)) {
             ++m_baseAckSeqNum;
         }
+           sendAcknowledgement();
+
         m_untrackedCount = 0;
         // m_baseAckSeqNum = m_baseWriteSeqNum;
     }
@@ -217,7 +221,7 @@ void SlothRxSocket::sendAcknowledgement()
 
     qDebug() << "SlothRX ACK  with base " << m_baseAckSeqNum << " ===> ";
     SlothPacketUtils::logBitMap(bitmap);
-
+    m_lastAckTime = QTime::currentTime();
     // Transmit the full serialized buffer
     transmitBuffer(fullBuffer);
 }
@@ -260,8 +264,9 @@ QByteArray SlothRxSocket::generateAckBitmap(quint32 base, int windowSize)
 void SlothRxSocket::handleNackTimeout()
 {
     QSet<quint32> currentMissing;
+    quint32 endSeq = qMin(m_baseAckSeqNum + m_windowSize, m_highestSeqReceived + 1);  // safe upper bound\
 
-    for (quint32 i = m_baseAckSeqNum; i <= m_highestSeqReceived; ++i) {
+    for (quint32 i = m_baseAckSeqNum; i <= endSeq/*m_baseAckSeqNum + m_windowSize*//*m_highestSeqReceived*/; ++i) {
         if (!m_receivedSeqNums.contains(i)) {
             currentMissing.insert(i);
         }
@@ -283,7 +288,7 @@ void SlothRxSocket::scheduleNackDebounce() {
 void SlothRxSocket::performNackDebounce() {
     QSet<quint32> stillMissing;
 
-    for (quint32 seq : m_pendingMissing) {
+    for (quint32 seq : qAsConst(m_pendingMissing)) {
         if (!m_receivedSeqNums.contains(seq)) {
             stillMissing.insert(seq);
         }
@@ -339,6 +344,18 @@ void SlothRxSocket::sendNack(QList<quint32> missing)
     transmitBuffer(full);
 }
 
+
+void SlothRxSocket::handleFeedbackTimeout()
+{
+    QTime now = QTime::currentTime();
+    int ms = m_lastAckTime.msecsTo(now);
+
+
+    // if no ack sent since past 400 ms then send ack
+    if(ms >= 400) {
+        sendAcknowledgement();
+    }
+}
 
 
 void SlothRxSocket::sayByeToPeer()

@@ -60,7 +60,7 @@ void SlothTxSocket::initiateHandshake(
     // retry handshake packet, to handle the case of handshake packet loss
     m_handshakeRetryTimer = new QTimer(this);
     m_handshakeReqRetryCount = 0;
-    connect(m_handshakeRetryTimer, &QTimer::timeout, [=]() {
+    connect(m_handshakeRetryTimer, &QTimer::timeout, this, [=]() {
         if (++m_handshakeReqRetryCount >= m_handshakeReqRetryLimit) {
             qWarning() << "Handshake retry limit reached. Giving up.";
             m_handshakeRetryTimer->stop();
@@ -164,8 +164,13 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
     quint32 base = packet.baseSeqNum;
     QByteArray bitmap = packet.bitmap;
 
-    qDebug() << "SlothTX:: <=== ACK";
+    qDebug() << "SlothTX:: <=== ACK with base " << base;
     SlothPacketUtils::logBitMap(bitmap);
+
+    qDebug() << "m_sendWindow before ack calculation " << m_sendWindow.keys();
+    qDebug() << "updating m_base from " << m_baseSeqNum << " to " << base - 1;
+    m_baseSeqNum = base - 1;
+
     for(int i = 0; i < bitmap.size(); i++) {
         quint8 byte = static_cast<quint8>(bitmap[i]);
         for(int bit = 0; bit < 8; bit++) {
@@ -179,7 +184,7 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
     while (!m_sendWindow.contains(m_baseSeqNum) && m_baseSeqNum < m_nextSeqNum) {
         ++m_baseSeqNum;
     }
-
+    qDebug() << "m_sendWindow after ack calculation " << m_sendWindow.keys();
     sendNextWindow();
 }
 
@@ -241,6 +246,8 @@ void SlothTxSocket::sendNextWindow()
 
             transmitBuffer(buffer);
             packetSent++;
+        } else {
+            qDebug() << "Packet not present in sendWindow, invalid ACK";
         }
     }
     m_nackWindow.clear();

@@ -5,6 +5,7 @@
 #include <QUdpSocket>
 #include <QFile>
 #include <QTimer>
+#include <QTime>
 
 #include <include/types.h>
 
@@ -77,6 +78,8 @@ private:
     QSet<quint32> m_pendingMissing;
 
     QTimer m_nackTimer;
+    QTimer m_feedbackTimer;
+    QTime m_lastAckTime;
     quint32 m_highestSeqReceived = 0;
     bool m_nackDebounceScheduled = false;
 
@@ -87,6 +90,7 @@ private:
 private slots:
     void handleReadyRead();
     void handleNackTimeout();
+    void handleFeedbackTimeout();
 
 signals:
     void on_fileTxRequest(QString fileName, quint64 fileSize, QString hostAddress);
