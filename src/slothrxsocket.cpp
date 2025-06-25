@@ -170,9 +170,9 @@ void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
 
     // increment baseAckSeqNum as soon as we receive ordered packet
     // on sender side we'll assume that
-    while (m_receivedSeqNums.contains(m_baseAckSeqNum)) {
-        ++m_baseAckSeqNum;
-    }
+    // while (m_receivedSeqNums.contains(m_baseAckSeqNum)) {
+    //     ++m_baseAckSeqNum;
+    // }
 
     m_untrackedCount++;
 

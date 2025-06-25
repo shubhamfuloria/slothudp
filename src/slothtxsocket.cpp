@@ -169,14 +169,15 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
 
     // qDebug() << "m_sendWindow before ack calculation " << m_sendWindow.keys();
 
-    quint32 newBase = m_baseSeqNum > base - 1 ? m_baseSeqNum : base - 1;
-    // qDebug() << "updating m_base from " << m_baseSeqNum << " to " << newBase;
+    // quint32 newBase = m_baseSeqNum > base - 1 ? m_baseSeqNum : base - 1;
+    // // qDebug() << "updating m_base from " << m_baseSeqNum << " to " << newBase;
 
-    for(quint32 i = m_baseSeqNum; i < newBase; i++) {
-        if(m_sendWindow.contains(i)) {
-            m_sendWindow.remove(i);
-        }
-    }
+    // for(quint32 i = m_baseSeqNum; i < newBase; i++) {
+    //     if(m_sendWindow.contains(i)) {
+    //         m_sendWindow.remove(i);
+    //     }
+    // }
+    // m_baseSeqNum = newBase;
 
     for(int i = 0; i < bitmap.size(); i++) {
         quint8 byte = static_cast<quint8>(bitmap[i]);
