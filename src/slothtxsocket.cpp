@@ -167,9 +167,16 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
     qDebug() << "SlothTX:: <=== ACK with base " << base;
     SlothPacketUtils::logBitMap(bitmap);
 
-    qDebug() << "m_sendWindow before ack calculation " << m_sendWindow.keys();
-    qDebug() << "updating m_base from " << m_baseSeqNum << " to " << base - 1;
-    m_baseSeqNum = base - 1;
+    // qDebug() << "m_sendWindow before ack calculation " << m_sendWindow.keys();
+
+    quint32 newBase = m_baseSeqNum > base - 1 ? m_baseSeqNum : base - 1;
+    // qDebug() << "updating m_base from " << m_baseSeqNum << " to " << newBase;
+
+    for(quint32 i = m_baseSeqNum; i < newBase; i++) {
+        if(m_sendWindow.contains(i)) {
+            m_sendWindow.remove(i);
+        }
+    }
 
     for(int i = 0; i < bitmap.size(); i++) {
         quint8 byte = static_cast<quint8>(bitmap[i]);
@@ -184,7 +191,7 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
     while (!m_sendWindow.contains(m_baseSeqNum) && m_baseSeqNum < m_nextSeqNum) {
         ++m_baseSeqNum;
     }
-    qDebug() << "m_sendWindow after ack calculation " << m_sendWindow.keys();
+    // qDebug() << "m_sendWindow after ack calculation " << m_sendWindow.keys();
     sendNextWindow();
 }
 

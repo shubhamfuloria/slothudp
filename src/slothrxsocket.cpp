@@ -168,15 +168,21 @@ void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
         m_baseWriteSeqNum++;
     }
 
+    // increment baseAckSeqNum as soon as we receive ordered packet
+    // on sender side we'll assume that
+    while (m_receivedSeqNums.contains(m_baseAckSeqNum)) {
+        ++m_baseAckSeqNum;
+    }
+
     m_untrackedCount++;
 
     if(m_untrackedCount >= 8) {
         qDebug() << "Sending acknowledgement";
-
+        sendAcknowledgement();
         while (m_receivedSeqNums.contains(m_baseAckSeqNum)) {
             ++m_baseAckSeqNum;
         }
-           sendAcknowledgement();
+
 
         m_untrackedCount = 0;
         // m_baseAckSeqNum = m_baseWriteSeqNum;
