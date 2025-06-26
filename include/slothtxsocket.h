@@ -81,7 +81,7 @@ private:
     quint8 m_protoVer = 1;
     QMap<quint32, QByteArray>m_sendWindow;
     QMap<quint32, QByteArray>m_inFlightWindow;
-    QSet<quint32> m_nackWindow; // contains nack ids received from client
+    QSet<quint32> m_missingWindow; // contains nack ids received from client
 
     quint32 m_activeSessionId;
     SessionState m_sessionState = SessionState::NOTACTIVE;

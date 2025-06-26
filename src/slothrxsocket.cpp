@@ -159,7 +159,7 @@ void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
     // qDebug() << QString("m_recvWindow size: %1, m_baseWriteSeq: %2, m_untrackedCount: %3")
     //                 .arg(m_recvWindow.size()).arg(m_baseWriteSeqNum).arg(m_untrackedCount);
 
-    qDebug() << "SlothRX <=== DATA seq " << header.sequenceNumber;
+    qDebug() << "SlothRX <=== DATA seq " << header.sequenceNumber << ", untrackedCount: " << m_untrackedCount;
 
     while(m_recvWindow.contains(m_baseWriteSeqNum)) {
         QByteArray chunk = m_recvWindow[m_baseWriteSeqNum];
@@ -170,12 +170,12 @@ void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
 
     // increment baseAckSeqNum as soon as we receive ordered packet
     // on sender side we'll assume that
-    // while (m_receivedSeqNums.contains(m_baseAckSeqNum)) {
-    //     ++m_baseAckSeqNum;
-    // }
+    while (m_receivedSeqNums.contains(m_baseAckSeqNum)) {
+        ++m_baseAckSeqNum;
+    }
 
     m_untrackedCount++;
-
+    // qDebug()
     if(m_untrackedCount >= 8) {
         qDebug() << "Sending acknowledgement";
         sendAcknowledgement();
@@ -270,9 +270,9 @@ QByteArray SlothRxSocket::generateAckBitmap(quint32 base, int windowSize)
 void SlothRxSocket::handleNackTimeout()
 {
     QSet<quint32> currentMissing;
-    quint32 endSeq = qMin(m_baseAckSeqNum + m_windowSize, m_highestSeqReceived + 1);  // safe upper bound\
+    // quint32 endSeq = qMin(m_baseAckSeqNum + m_windowSize, m_highestSeqReceived + 1);  // safe upper bound\
 
-    for (quint32 i = m_baseAckSeqNum; i <= endSeq/*m_baseAckSeqNum + m_windowSize*//*m_highestSeqReceived*/; ++i) {
+    for (quint32 i = m_baseAckSeqNum; i <= /*endSeq*//*m_baseAckSeqNum + m_windowSize*/m_highestSeqReceived; ++i) {
         if (!m_receivedSeqNums.contains(i)) {
             currentMissing.insert(i);
         }
@@ -359,6 +359,7 @@ void SlothRxSocket::handleFeedbackTimeout()
 
     // if no ack sent since past 400 ms then send ack
     if(ms >= 400) {
+        qDebug() << "feedback timeout";
         sendAcknowledgement();
     }
 }

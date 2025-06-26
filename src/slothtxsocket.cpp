@@ -167,17 +167,18 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
     qDebug() << "SlothTX:: <=== ACK with base " << base;
     SlothPacketUtils::logBitMap(bitmap);
 
+    // update m_baseSeq
+
     // qDebug() << "m_sendWindow before ack calculation " << m_sendWindow.keys();
+    quint32 baseMinusOne = base > 0 ? base - 1 : base;
+     quint32 newBase = m_baseSeqNum > baseMinusOne ? m_baseSeqNum : baseMinusOne;
+    qDebug() << "updating m_base from " << m_baseSeqNum << " to " << newBase;
 
-    // quint32 newBase = m_baseSeqNum > base - 1 ? m_baseSeqNum : base - 1;
-    // // qDebug() << "updating m_base from " << m_baseSeqNum << " to " << newBase;
-
-    // for(quint32 i = m_baseSeqNum; i < newBase; i++) {
-    //     if(m_sendWindow.contains(i)) {
-    //         m_sendWindow.remove(i);
-    //     }
-    // }
-    // m_baseSeqNum = newBase;
+    for(quint32 i = m_baseSeqNum; i < newBase; i++) {
+        if(m_sendWindow.contains(i)) {
+            m_sendWindow.remove(i);
+        } }
+    m_baseSeqNum = newBase;
 
     for(int i = 0; i < bitmap.size(); i++) {
         quint8 byte = static_cast<quint8>(bitmap[i]);
@@ -186,6 +187,8 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
             bool isAcked = byte & (1 << (7 - bit));
             if(isAcked) {
                 m_sendWindow.remove(seq);
+            } else if(seq < m_nextSeqNum){ // if there is a hole in ack, we mark this as missing packet, and send this packet in next transmission
+                m_missingWindow.insert(seq);
             }
         }
     }
@@ -210,7 +213,7 @@ void SlothTxSocket::handleNack(PacketHeader header, QByteArray buffer)
         for (int bit = 0; bit < 8; ++bit) {
             quint32 seq = base + i * 8 + bit;
             if (byte & (1 << (7 - bit))) {
-                m_nackWindow.insert(seq);
+                m_missingWindow.insert(seq);
             }
         }
     }
@@ -245,7 +248,7 @@ void SlothTxSocket::sendNextWindow()
     int packetSent = 0;
 
     // send nack items
-    for(quint32 seq : qAsConst(m_nackWindow)) {
+    for(quint32 seq : qAsConst(m_missingWindow)) {
         // assuming nack packet is already present in m_sendWindow
         if(m_sendWindow.contains(seq)) {
             // this should be complete buffer including all checksum and all
@@ -258,9 +261,10 @@ void SlothTxSocket::sendNextWindow()
             qDebug() << "Packet not present in sendWindow, invalid ACK";
         }
     }
-    m_nackWindow.clear();
+    m_missingWindow.clear();
     qDebug() << QString("m_nextSeqNum: %1, m_baseSeqNum: %2, m_windowSize: %3, packetSet: %4")
                     .arg(m_nextSeqNum).arg(m_baseSeqNum).arg(m_windowSize).arg(packetSent);
+
     while ((m_nextSeqNum < m_baseSeqNum + m_windowSize) && packetSent < m_windowSize && !m_file.atEnd()) {
         QByteArray chunk = m_file.read(m_chunkSize);
 
