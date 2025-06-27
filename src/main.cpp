@@ -1,5 +1,6 @@
 #include <QCoreApplication>
 #include <QDebug>
+#include <QThread>
 
 #include <include/slothrxsocket.h>
 #include <include/slothtxsocket.h>
@@ -10,10 +11,27 @@ int main(int argc, char *argv[])
 
     qInfo() << "Hello I'm Sloth UDP, a reliable file transfer protocol";
 
-    SlothTxSocket txSocket;
-    SlothRxSocket rxSocket;
+    SlothRxSocket* rx = new SlothRxSocket(); // lives on heap
+    QThread* rxThread = new QThread();       // also on heap
 
-    txSocket.initiateHandshake("C:/Users/Shubham/Videos/test.png", 50, "127.0.0.1", 5000);
+    rx->moveToThread(rxThread);
+
+    QObject::connect(rxThread, &QThread::finished, rx, &QObject::deleteLater);
+    QObject::connect(rxThread, &QThread::finished, rxThread, &QObject::deleteLater);
+
+    rxThread->start();
+
+
+
+    SlothTxSocket* tx = new SlothTxSocket();
+    QThread* txThread = new QThread();
+    tx->moveToThread(txThread);
+    QObject::connect(txThread, &QThread::finished, tx, &QObject::deleteLater);
+    txThread->start();
+
+    QMetaObject::invokeMethod(tx, [=]() {
+            tx->initiateHandshake("C:/Users/Shubham/Videos/test.png", 50, "127.0.0.1", 5000);
+        }, Qt::QueuedConnection);
 
     return a.exec();
 }

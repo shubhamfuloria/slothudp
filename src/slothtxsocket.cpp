@@ -187,8 +187,22 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
             bool isAcked = byte & (1 << (7 - bit));
             if(isAcked) {
                 m_sendWindow.remove(seq);
-            } else if(seq < m_nextSeqNum){ // if there is a hole in ack, we mark this as missing packet, and send this packet in next transmission
-                m_missingWindow.insert(seq);
+            }
+
+            // sender may send us early ack , like we send 16 packets to receiver
+            // receiver after receiving 8 packets may send ack and the ack may look like base: 8, 00000000
+            // which represents, we've received packet till 8, and 8 packets after 8 are missing
+            // though sender is still sending these packets
+            // so it's not viable to mark these 0s as missing packets
+
+            // we'll only mark missing packets when we receive an nack or a timeout hits in sender window
+            // otherwise we'll assume the packet has been delivered
+
+
+            // I think we shouldn't assume that each hole in bitmap is lost
+            // because we're getting ack in this form too 10000000 (base: 50), 50th pac
+            else if(seq < m_nextSeqNum){ // if there is a hole in ack, we mark this as missing packet, and send this packet in next transmission
+                // m_missingWindow.insert(seq);
             }
         }
     }
@@ -231,7 +245,7 @@ bool SlothTxSocket::initiateFileTransfer()
 
     m_nextSeqNum = 0;
     m_baseSeqNum = 0;
-    m_windowSize = 8;
+    m_windowSize = 16;
 
     sendNextWindow();
     return true;

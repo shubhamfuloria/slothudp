@@ -15,8 +15,6 @@ SlothRxSocket::SlothRxSocket() {
     }
 
     connect(this, &QUdpSocket::readyRead, this, &SlothRxSocket::handleReadyRead);
-    connect(&m_nackTimer, &QTimer::timeout, this, &SlothRxSocket::handleNackTimeout);
-    connect(&m_feedbackTimer, &QTimer::timeout, this, &SlothRxSocket::handleFeedbackTimeout);
 }
 
 void SlothRxSocket::handleReadyRead()
@@ -114,7 +112,12 @@ void SlothRxSocket::handleHandshakePacket(QByteArray buffer)
     // just for testing we're auto accepting the handshake request
     // in real case this we'll only acknowledge once user triggers the accept
 
-    acknowledgeTxRequest(packet.requestId);
+    // acknowledgeTxRequest(packet.requestId);
+
+
+    QMetaObject::invokeMethod(this, [=]() {
+                acknowledgeTxRequest(packet.requestId);
+            }, Qt::QueuedConnection);
 }
 
 
@@ -139,8 +142,7 @@ bool SlothRxSocket::acknowledgeTxRequest(quint32 requestId)
      *
     */
 
-    m_nackTimer.start(500);
-    m_feedbackTimer.start(500);
+    startFeedbackTimers();
     return transmitBuffer(buffer);
 }
 
@@ -347,6 +349,8 @@ void SlothRxSocket::sendNack(QList<quint32> missing)
                << packet.header.checksum;
     fullStream.writeRawData(payload.constData(), payload.size());
 
+
+    m_lastAckTime = QTime::currentTime();
     transmitBuffer(full);
 }
 
@@ -358,10 +362,22 @@ void SlothRxSocket::handleFeedbackTimeout()
 
 
     // if no ack sent since past 400 ms then send ack
-    if(ms >= 400) {
+    if(ms >= 200) {
         qDebug() << "feedback timeout";
         sendAcknowledgement();
     }
+}
+
+void SlothRxSocket::startFeedbackTimers()
+{
+    m_nackTimer = new QTimer(this);
+    m_feedbackTimer = new QTimer(this);
+
+    connect(m_nackTimer, &QTimer::timeout, this, &SlothRxSocket::handleNackTimeout);
+    connect(m_feedbackTimer, &QTimer::timeout, this, &SlothRxSocket::handleFeedbackTimeout);
+
+    m_nackTimer->start(500);
+    m_feedbackTimer->start(500);
 }
 
 

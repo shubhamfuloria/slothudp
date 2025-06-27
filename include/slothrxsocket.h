@@ -56,6 +56,8 @@ private:
     void performNackDebounce();
     void sendNack(QList<quint32> missing);
 
+    void startFeedbackTimers();
+
     QHostAddress m_txAddress;
     quint16 m_txPort;
     uint m_windowSize = 8;
@@ -77,8 +79,8 @@ private:
 
     QSet<quint32> m_pendingMissing;
 
-    QTimer m_nackTimer;
-    QTimer m_feedbackTimer;
+    QTimer* m_nackTimer = nullptr;
+    QTimer* m_feedbackTimer = nullptr;
     QTime m_lastAckTime;
     quint32 m_highestSeqReceived = 0;
     bool m_nackDebounceScheduled = false;

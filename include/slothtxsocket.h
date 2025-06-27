@@ -5,6 +5,7 @@
 #include <QUdpSocket>
 #include <QFile>
 #include <QTimer>
+#include <QElapsedTimer>
 
 #include <include/types.h>
 
@@ -79,6 +80,9 @@ private:
     int m_nextSeqNum;
     int m_chunkSize = 700;
     quint8 m_protoVer = 1;
+    QElapsedTimer m_rttTimer;
+    QMap<quint32, quint64> m_sentTimestamp; // seql -> milisecond, to calculate RTT
+    // double
     QMap<quint32, QByteArray>m_sendWindow;
     QMap<quint32, QByteArray>m_inFlightWindow;
     QSet<quint32> m_missingWindow; // contains nack ids received from client
