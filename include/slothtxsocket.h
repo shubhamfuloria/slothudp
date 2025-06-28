@@ -78,14 +78,20 @@ private:
      * PS: we won't wait for all packets to be acked, we'll keep sending new packets
      */
     int m_nextSeqNum;
-    int m_chunkSize = 700;
+    int m_chunkSize = 1024;
     quint8 m_protoVer = 1;
-    QElapsedTimer m_rttTimer;
+    QElapsedTimer* m_rttTimer = nullptr;
     QMap<quint32, quint64> m_sentTimestamp; // seql -> milisecond, to calculate RTT
-    // double
+    double m_estimatedRTT = 300.0;
+    quint64 m_devRTT = 0;
+    quint64 m_RTO = 1000; // retransmission timeout
+    QTimer* m_retransmitTimer = nullptr;
+
+
     QMap<quint32, QByteArray>m_sendWindow;
     QMap<quint32, QByteArray>m_inFlightWindow;
     QSet<quint32> m_missingWindow; // contains nack ids received from client
+    QMap<quint32, quint64> m_lastRextTime;
 
     quint32 m_activeSessionId;
     SessionState m_sessionState = SessionState::NOTACTIVE;
@@ -105,6 +111,8 @@ private slots:
      * @brief handleReadyRead: gets triggered when the socket receives some datagram
      */
     void handleReadyRead();
+
+    void handleRetransmissions();
 
 
 

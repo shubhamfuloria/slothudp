@@ -6,6 +6,7 @@
 #include <QDataStream>
 #include <QFileInfo>
 #include <QNetworkDatagram>
+#include <QElapsedTimer>
 
 SlothTxSocket::SlothTxSocket()
 {
@@ -72,6 +73,13 @@ void SlothTxSocket::initiateHandshake(
     });
 
     m_handshakeRetryTimer->start(500);
+
+    m_rttTimer = new QElapsedTimer();
+    m_rttTimer->start();
+
+    m_retransmitTimer = new QTimer();
+    connect(m_retransmitTimer, &QTimer::timeout, this, &SlothTxSocket::handleRetransmissions);
+    m_retransmitTimer->start(300);
 }
 
 
@@ -176,6 +184,17 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
 
     for(quint32 i = m_baseSeqNum; i < newBase; i++) {
         if(m_sendWindow.contains(i)) {
+
+            if(m_sentTimestamp.contains(i)) {
+                quint64 sentTime = m_sentTimestamp.value(i);
+                quint64 now = m_rttTimer->elapsed();
+
+                quint64 rtt = now - sentTime;
+                m_estimatedRTT = 0.875 * m_estimatedRTT + 0.125 * rtt;
+                quint64 deviation = std::abs((qint64)rtt - (qint64)m_estimatedRTT);
+                m_devRTT = 0.75 * m_devRTT + 0.25 * deviation;
+                m_sentTimestamp.remove(i);
+        }
             m_sendWindow.remove(i);
         } }
     m_baseSeqNum = newBase;
@@ -186,7 +205,19 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
             quint32 seq = base + i * 8 + bit;
             bool isAcked = byte & (1 << (7 - bit));
             if(isAcked) {
+
+                if(m_sentTimestamp.contains(seq)) {
+                    quint64 sentTime = m_sentTimestamp.value(seq);
+                    quint64 now = m_rttTimer->elapsed();
+
+                    quint64 rtt = now - sentTime;
+                    m_estimatedRTT = 0.875 * m_estimatedRTT + 0.125 * rtt;
+                    quint64 deviation = std::abs((qint64)rtt - (qint64)m_estimatedRTT);
+                    m_devRTT = 0.75 * m_devRTT + 0.25 * deviation;
+                    m_sentTimestamp.remove(seq);
+                }
                 m_sendWindow.remove(seq);
+
             }
 
             // sender may send us early ack , like we send 16 packets to receiver
@@ -206,6 +237,7 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
             }
         }
     }
+    qDebug() << "m_estimated RTT " << m_estimatedRTT;
     while (!m_sendWindow.contains(m_baseSeqNum) && m_baseSeqNum < m_nextSeqNum) {
         ++m_baseSeqNum;
     }
@@ -245,7 +277,7 @@ bool SlothTxSocket::initiateFileTransfer()
 
     m_nextSeqNum = 0;
     m_baseSeqNum = 0;
-    m_windowSize = 16;
+    m_windowSize = 60;
 
     sendNextWindow();
     return true;
@@ -265,10 +297,26 @@ void SlothTxSocket::sendNextWindow()
     for(quint32 seq : qAsConst(m_missingWindow)) {
         // assuming nack packet is already present in m_sendWindow
         if(m_sendWindow.contains(seq)) {
+
+            quint64 now = m_rttTimer->elapsed();
+            if (m_lastRextTime.contains(seq)) {
+                quint64 lastSent = m_lastRextTime[seq];
+                // Skip if we've sent it too recently (e.g., within 0.5 * RTO to avoid bursty repeat)
+                if (now - lastSent < 0.5 * m_RTO) {
+                    qDebug() << "Skipping seq:" << seq << " (recently retransmitted)";
+                    continue;
+                }
+            }
+
+
             // this should be complete buffer including all checksum and all
             QByteArray buffer = m_sendWindow[seq];
             qDebug() << "SlothTX: DATA(n) seq " << seq << " ====> ";
 
+            if(m_sentTimestamp.contains(seq)) m_sentTimestamp.remove(seq);
+
+            // m_sentTimestamp.insert(seq, now);
+            m_lastRextTime.insert(seq, now);
             transmitBuffer(buffer);
             packetSent++;
         } else {
@@ -288,23 +336,47 @@ void SlothTxSocket::sendNextWindow()
         packet.header.checksum = qChecksum(chunk.constData(), packet.header.payloadSize);
         packet.chunk = chunk;
 
+        quint64 now = m_rttTimer->elapsed();
+        m_sentTimestamp.insert(m_nextSeqNum, now);
+
         QByteArray buffer = SlothPacketUtils::serializePacket(packet);
 
         qDebug() << "SlothTX: DATA seq " << packet.header.sequenceNumber << " ====> ";
 
         transmitBuffer(buffer);
-
         m_sendWindow[m_nextSeqNum] = buffer;
         ++m_nextSeqNum;
         ++packetSent;
     }
 
-    if (m_file.atEnd()) {
+    if (m_file.atEnd() && m_sendWindow.empty()) {
         qDebug() << "Reached end of file (EOF). Waiting for ACKs before sending FIN.";
 
         qDebug() << "Sending EOF packet";
         sendEOFPacket();
     }
+}
+
+
+void SlothTxSocket::handleRetransmissions()
+{
+    quint64 now = m_rttTimer->elapsed();
+    auto keys = m_sentTimestamp.keys();
+    for (auto seq : qAsConst(keys)) {
+        quint64 sentTime = m_sentTimestamp[seq];
+        if (now - sentTime >= m_RTO) {
+            qDebug() << "Timeout detected for seq:" << seq << ", resending";
+
+            if (m_sendWindow.contains(seq)) {
+                m_missingWindow.insert(seq);  // Will be picked up by sendNextWindow
+            }
+
+            // Don't update RTT on retransmit
+            m_sentTimestamp.remove(seq);  // prevent repeated retries until retransmitted
+        }
+    }
+
+    sendNextWindow(); // triggers retransmission
 }
 
 // void SlothTxSocket::sendPacket(DataPacket& packet)

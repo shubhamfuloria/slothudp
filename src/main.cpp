@@ -30,7 +30,7 @@ int main(int argc, char *argv[])
     txThread->start();
 
     QMetaObject::invokeMethod(tx, [=]() {
-            tx->initiateHandshake("C:/Users/Shubham/Videos/test.png", 50, "127.0.0.1", 5000);
+            tx->initiateHandshake("C:/Users/Shubham/Videos/test.zip", 50, "127.0.0.1", 5000);
         }, Qt::QueuedConnection);
 
     return a.exec();
