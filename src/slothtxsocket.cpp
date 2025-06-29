@@ -64,9 +64,10 @@ void SlothTxSocket::printTransmissionProgress()
 
     // Calculate progress percentage
     double progressPercent = 0.0;
+    qDebug() << "m_fileSize: " << m_fileSize;
     if (m_fileSize > 0) {
         // progressPercent = (double)m_stats.uniqueBytesSent / m_fileSize * 100.0;
-        progressPercent = (double)m_stats.uniqueBytesSent / m_fileSize.toLongLong() * 100.0;
+        progressPercent = (double)m_stats.uniqueBytesSent / m_fileSize * 100.0;
 
     }
 
@@ -102,12 +103,12 @@ void SlothTxSocket::initiateHandshake(
     QString destination,
     quint16 port)
 {
-#ifdef DEBUG_TX_SOCKET
+// #ifdef DEBUG_TX_SOCKET
     qDebug() << QString("Initiating handshake with %1:%2, sending file %3 of size %4")
                     .arg(destination)
                     .arg(port).arg(filePath)
                     .arg(fileSize);
-#endif
+// #endif
 
     m_filePath = filePath;
     m_fileSize = fileSize;
@@ -150,15 +151,15 @@ void SlothTxSocket::initiateHandshake(
             return;
         }
 
-#ifdef DEBUG_TX_SOCKET
+// #ifdef DEBUG_TX_SOCKET
         qDebug() << "Retrying handshake... attempt" << m_handshakeReqRetryCount;
-#endif
+// #endif
         transmitBuffer(buffer);
         m_stats.totalPacketsSent++;
         m_stats.totalRetransmissions++;
     });
 
-    m_handshakeRetryTimer->start(500);
+    m_handshakeRetryTimer->start(1000);
 
     m_rttTimer = new QElapsedTimer();
     m_rttTimer->start();
@@ -304,7 +305,7 @@ bool SlothTxSocket::initiateFileTransfer()
     m_windowSize = 20;
 
     // Start progress monitoring
-    // m_progressTimer->start(1000); // Print progress every second
+    m_progressTimer->start(1000); // Print progress every second
 
     sendNextWindow();
     return true;
@@ -405,7 +406,7 @@ void SlothTxSocket::sendNextWindow()
         // Stop progress timer when transfer is complete
         if (m_progressTimer) {
             m_progressTimer->stop();
-            // printTransmissionProgress(); // Final progress report
+            printTransmissionProgress(); // Final progress report
         }
     }
 

@@ -95,7 +95,7 @@ private:
     void handleBye();
 
     QString m_filePath;
-    QString m_fileSize;
+    quint64 m_fileSize;
     QFile m_file;
     QHostAddress m_destAddress;
     quint16 m_destPort;
