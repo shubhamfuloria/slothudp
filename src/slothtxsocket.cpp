@@ -182,7 +182,7 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
      quint32 newBase = m_baseSeqNum > baseMinusOne ? m_baseSeqNum : baseMinusOne;
     qDebug() << "updating m_base from " << m_baseSeqNum << " to " << newBase;
 
-    for(quint32 i = m_baseSeqNum; i < newBase; i++) {
+    for(quint32 i = m_baseSeqNum; i <= newBase; i++) {
         if(m_sendWindow.contains(i)) {
 
             if(m_sentTimestamp.contains(i)) {
@@ -277,7 +277,7 @@ bool SlothTxSocket::initiateFileTransfer()
 
     m_nextSeqNum = 0;
     m_baseSeqNum = 0;
-    m_windowSize = 60;
+    m_windowSize = 20;
 
     sendNextWindow();
     return true;
@@ -326,6 +326,7 @@ void SlothTxSocket::sendNextWindow()
     m_missingWindow.clear();
     qDebug() << QString("m_nextSeqNum: %1, m_baseSeqNum: %2, m_windowSize: %3, packetSet: %4")
                     .arg(m_nextSeqNum).arg(m_baseSeqNum).arg(m_windowSize).arg(packetSent);
+    qDebug() << "m_sendWindow: " << m_sendWindow.keys();
 
     while ((m_nextSeqNum < m_baseSeqNum + m_windowSize) && packetSent < m_windowSize && !m_file.atEnd()) {
         QByteArray chunk = m_file.read(m_chunkSize);
@@ -349,11 +350,23 @@ void SlothTxSocket::sendNextWindow()
         ++packetSent;
     }
 
-    if (m_file.atEnd() && m_sendWindow.empty()) {
-        qDebug() << "Reached end of file (EOF). Waiting for ACKs before sending FIN.";
 
-        qDebug() << "Sending EOF packet";
-        sendEOFPacket();
+    if (m_file.atEnd()) {
+        if(m_sendWindow.empty()) {
+            qDebug() << "Reached end of file (EOF). Waiting for ACKs before sending FIN.";
+
+            qDebug() << "Sending EOF packet";
+            sendEOFPacket();
+        }
+         else {
+            for(auto s : m_sendWindow.keys()) {
+                auto buffer = m_sendWindow[s];
+                transmitBuffer(buffer);
+                packetSent++;
+
+                if(packetSent >= m_windowSize) break;
+            }
+        }
     }
 }
 
