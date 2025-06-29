@@ -36,8 +36,8 @@ void SlothTxSocket::initializeProgressTracking()
     m_linkCapacityBps = 10000; // Start with 10Kbps instead of 1Mbps
     m_adaptiveChunkSize = 512;  // Smaller chunks for unreliable links
     m_congestionState = SLOW_START;
-    m_cwndFloat = 4.0; // Start with 4 packets
-    m_congestionWindow = 4;
+    m_congestionWindow = 8;
+    m_cwndFloat = 8.0;
 
     // FIX: More reasonable initial timeouts
     m_RTO = 1000; // 1 second instead of default
@@ -70,7 +70,7 @@ void SlothTxSocket::initializeForLowSpeedLink()
     m_cwndFloat = 4.0;
     m_ssthresh = 8;
     m_windowSize = 12;
-    m_maxWindow = 20;
+    m_maxWindow = 64;
 
     m_estimatedRTT = 100;
     m_RTO = 300;
@@ -92,16 +92,12 @@ void SlothTxSocket::adaptChunkSize()
     quint32 optimalSize;
 
     // Base chunk size on actual measured bandwidth, not estimated
-    if (m_linkCapacityBps < 20000) {        // < 20 Kbps (2.5 KB/s)
+    if (m_linkCapacityBps < 10000) {
         optimalSize = 256;
-    } else if (m_linkCapacityBps < 50000) { // < 50 Kbps (6.25 KB/s)
+    } else if (m_linkCapacityBps < 30000) {
         optimalSize = 512;
-    } else if (m_linkCapacityBps < 100000) { // < 100 Kbps (12.5 KB/s)
-        optimalSize = 768;
-    } else if (m_linkCapacityBps < 200000) { // < 200 Kbps (25 KB/s)
-        optimalSize = 1024;
     } else {
-        optimalSize = 1024; // Never exceed 1KB for low-speed links
+        optimalSize = 1024; // Safe max chunk size
     }
 
     // CRITICAL: Account for loss rate - smaller chunks for lossy links
@@ -219,7 +215,7 @@ void SlothTxSocket::updatePacingInterval()
     }
 
     // CRITICAL FIX: Very conservative pacing for low bandwidth
-    quint64 targetBps = (m_linkCapacityBps * 60) / 100; // Use only 60% of measured capacity
+    quint64 targetBps = (m_linkCapacityBps * 80) / 100; // Use only 60% of measured capacity
     quint64 bytesPerPacket = m_adaptiveChunkSize + 60; // Account for all headers
 
     // Calculate time between packets in milliseconds
@@ -605,7 +601,7 @@ void SlothTxSocket::sendNextWindow()
         }
 
         // Send only one packet with longer delay during deadlock
-        QThread::msleep(200); // 200ms delay between retransmissions
+        QThread::msleep(50); // 200ms delay between retransmissions
     } else {
         consecutiveDeadlocks = 0;
     }
@@ -652,7 +648,7 @@ void SlothTxSocket::sendNextWindow()
                 if (isDeadlocked) {
                     QThread::msleep(50); // Longer delay during deadlock recovery
                 } else if (packetsToSend < (int)maxBurstSize) {
-                    QThread::msleep(10);
+                    QThread::msleep(5);
                 }
             } else {
                 qWarning() << "Failed to recreate packet" << seq << "- removing from windows";
@@ -732,7 +728,10 @@ bool SlothTxSocket::recreateAndRetransmitPacket(quint32 seq)
     }
 
     // Read the chunk data
-    qint64 bytesToRead = qMin((qint64)m_adaptiveChunkSize, (qint64)(m_fileSize - filePosition));
+    // qint64 bytesToRead = qMin((qint64)m_adaptiveChunkSize, (qint64)(m_fileSize - filePosition));
+    qint64 remaining = (qint64)(m_fileSize - filePosition);
+    if (remaining < 0) remaining = 0;
+    qint64 bytesToRead = qMin((qint64)m_adaptiveChunkSize, remaining);
     QByteArray chunk = m_file.read(bytesToRead);
 
     // Restore file position
@@ -858,7 +857,8 @@ quint32 SlothTxSocket::getEffectiveWindowSize()
     }
 
     // CRITICAL FIX: Higher maximum window
-    effectiveWindow = qMin(effectiveWindow, (quint32)40);
+    // effectiveWindow = qMin(effectiveWindow, (quint32)40);
+    effectiveWindow = qMin(effectiveWindow, (quint32)64);
 
     return effectiveWindow;
 }
@@ -1059,7 +1059,7 @@ void SlothTxSocket::updateRTTAndBandwidth(quint32 seq, quint64 now)
 
         // Update RTT statistics
         m_rttSamples.enqueue(rtt);
-        if (m_rttSamples.size() > 10) {
+        if (m_rttSamples.size() > 20) {
             m_rttSamples.dequeue(); // Keep only recent samples
         }
 
@@ -1079,6 +1079,8 @@ void SlothTxSocket::updateRTTAndBandwidth(quint32 seq, quint64 now)
         m_RTO = m_estimatedRTT + 4 * m_devRTT;
         m_RTO = qMax(m_RTO, (quint64)100);
         m_RTO = qMin(m_RTO, (quint64)3000);
+        m_RTO = qBound((quint64)200, m_RTO, (quint64)3000); // Lower bound 200ms
+
 
         m_sentTimestamp.remove(seq);
     }
