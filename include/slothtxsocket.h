@@ -95,11 +95,12 @@ private:
     void handleBye();
 
     QString m_filePath;
+    int m_deadlockCount = 0;
     quint64 m_fileSize;
     QFile m_file;
     QHostAddress m_destAddress;
     quint16 m_destPort;
-    int m_windowSize;
+    int m_windowSize = 20;
 
     /**
      * @brief m_baseSeqNum: stores oldest unacknowledged packet
@@ -117,15 +118,22 @@ private:
     QHash<quint32, quint64> m_sentTimestamp; // seql -> milisecond, to calculate RTT
     double m_estimatedRTT = 300.0;
     quint64 m_devRTT = 0;
-    quint64 m_RTO = 1000; // retransmission timeout
+    quint64 m_RTO = 2000; // retransmission timeout
     QTimer* m_retransmitTimer = nullptr;
     QTimer* m_progressTimer = nullptr;
+
+    QSet<quint32> m_actuallyLostPackets; // Only truly lost packets
+    QMap<quint32, int> m_lossDetectionCount; // Count how many times we detected loss
 
 
     QHash<quint32, QByteArray>m_sendWindow;
     QHash<quint32, QByteArray>m_inFlightWindow;
     QSet<quint32> m_missingWindow; // contains nack ids received from client
     QHash<quint32, quint64> m_lastRextTime;
+    void handleBandwidthTransition();
+    void handleDeadlockRecovery();
+    bool recreateAndRetransmitPacket(quint32 seq);
+    void handleChecksumFailures();
 
     quint32 m_activeSessionId;
     SessionState m_sessionState = SessionState::NOTACTIVE;
@@ -143,8 +151,8 @@ private:
     // Adaptive Window Control
     quint32 m_congestionWindow = 10;      // Current congestion window
     quint32 m_slowStartThreshold = 65535; // Slow start threshold
-    quint32 m_maxWindow = 100;            // Maximum allowed window
-    quint32 m_minWindow = 4;              // Minimum window size
+    quint32 m_maxWindow = 32;            // Maximum allowed window
+    quint32 m_minWindow = 2;              // Minimum window size
 
     // Performance monitoring
     quint64 m_lastWindowAdjustment = 0;   // Time of last window change
@@ -181,6 +189,55 @@ private:
     static const int m_finRetryLimit = 5;
     bool m_transferCompleted = false;
     void performTransferCleanup();
+
+    // Adaptive bandwidth detection
+    quint64 m_linkCapacityBps = 0;           // Detected link capacity in bits/sec
+    quint64 m_targetUtilization = 70;        // Target 85% utilization
+    QQueue<quint64> m_throughputSamples;     // Recent throughput measurements
+    quint64 m_bandwidthProbeTimer = 0;       // Timer for bandwidth probing
+
+    // Dynamic chunk sizing
+    quint32 m_adaptiveChunkSize = 1024;      // Current chunk size
+    quint32 m_minChunkSize = 256;            // Minimum chunk size
+    quint32 m_maxChunkSize = 8192;           // Maximum chunk size
+
+    // Enhanced congestion control
+    enum CongestionState {
+        SLOW_START,
+        CONGESTION_AVOIDANCE,
+        FAST_RECOVERY,
+        BANDWIDTH_PROBING
+    } m_congestionState = SLOW_START;
+
+    quint32 m_ssthresh = 64;                 // Slow start threshold
+    double m_cwndFloat = 1.0;                // Fractional congestion window
+    quint32 m_fastRecoveryTarget = 0;        // Target for fast recovery
+
+    // Pacing control
+    QTimer* m_pacingTimer = nullptr;
+    QQueue<QByteArray> m_pacingQueue;        // Queue for paced transmission
+    quint64 m_pacingInterval = 0;            // Microseconds between packets
+
+    // Link condition detection
+    quint64 m_goodputBytes = 0;              // Successfully delivered bytes
+    quint64 m_goodputTimer = 0;              // Timer for goodput calculation
+    double m_lossRate = 0.0;                 // Estimated loss rate
+    QQueue<double> m_lossRateSamples;        // Recent loss rate samples
+
+    // Adaptive retransmission
+    QMap<quint32, quint32> m_retransmitCount;   // Per-packet retransmit count
+    QMap<quint32, quint64> m_adaptiveRTO;       // Per-packet adaptive RTO
+    void adaptChunkSize();
+    void updateBandwidthEstimation();
+    void updatePacingInterval();
+    quint32 calculateBDPWindow();
+    void updateLossRate();
+    void sendPacedPacket();
+    void resetLossTracking();
+    void markPacketAsLost(quint32 seq, const QString& reason);
+    void initializeForLowSpeedLink();
+
+
 
 private slots:
     /**

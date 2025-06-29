@@ -181,13 +181,10 @@ bool SlothRxSocket::acknowledgeTxRequest(quint32 requestId)
 void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
 
     if(header.sequenceNumber < m_baseWriteSeqNum) {
-#ifdef DEBUG_RX_SOCKET
-        qDebug() << "Already written packet " << header.sequenceNumber;
-#endif \
-    // Still send ACK for old packets to help sender advance
         m_stats.duplicatePacketsReceived++;
-        if (m_untrackedCount == 0) {
-            m_untrackedCount = 8; // Force ACK send
+        // For duplicates, only ACK if we haven't sent one recently
+        if (m_packetsSinceLastAck > m_adaptiveAckThreshold * 2) {
+            scheduleDelayedAck();
         }
         return;
     }
@@ -201,9 +198,10 @@ void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
     m_recvWindow[header.sequenceNumber] = payload;
     m_receivedSeqNums.insert(header.sequenceNumber);
 
-#ifdef DEBUG_RX_SOCKET
-    qDebug() << "SlothRX <=== DATA seq " << header.sequenceNumber << ", untrackedCount: " << m_untrackedCount;
-#endif
+    // Bandwidth estimation
+    m_consecutivePackets++;
+    m_bwMeasureBytes += payload.size();
+    m_packetsSinceLastAck++;
 
     // Write continuous packets to file
     while(m_recvWindow.contains(m_baseWriteSeqNum)) {
@@ -221,22 +219,172 @@ void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
 
     m_untrackedCount++;
 
-    // IMPROVEMENT 2: More frequent ACKs and immediate ACK for gaps
-    bool hasGap = (header.sequenceNumber > m_baseAckSeqNum);
+    // OPTIMIZED ACK STRATEGY
+    bool hasSignificantGap = isSignificantGap(header.sequenceNumber);
+    bool shouldAckNow = false;
 
-    if (m_untrackedCount >= 4 || hasGap) { // Reduced from 8 to 4 for faster feedback
-#ifdef DEBUG_RX_SOCKET
-        qDebug() << "Sending acknowledgement (gap detected: " << hasGap << ")";
-#endif
+    if (hasSignificantGap) {
+        // Immediate ACK for significant gaps
+        shouldAckNow = true;
+        m_lastSignificantGap = QTime::currentTime();
+    } else if (m_isLowBandwidth) {
+        // Low bandwidth: Very conservative ACKing
+        shouldAckNow = (m_untrackedCount >= m_adaptiveAckThreshold * 3);
+    } else {
+        // Normal bandwidth: Standard threshold
+        shouldAckNow = (m_untrackedCount >= m_adaptiveAckThreshold);
+    }
+
+    if (shouldAckNow) {
         sendAcknowledgement();
         m_untrackedCount = 0;
+        m_packetsSinceLastAck = 0;
+    } else if (!m_pendingAck && m_untrackedCount >= m_adaptiveAckThreshold / 2) {
+        // Schedule delayed ACK for efficiency
+        scheduleDelayedAck();
+    }
+
+    // Update parameters less frequently to reduce overhead
+    if (m_consecutivePackets % 50 == 0) {
+        estimateBandwidth();
+        updateAdaptiveParameters();
+        optimizeForBandwidth();
     }
 }
 
-void SlothRxSocket::sendAcknowledgement()
-{
-    // Use larger bitmap for better feedback (16 bytes = 128 bits)
-    int bitmapSize = 16;
+void SlothRxSocket::scheduleDelayedAck() {
+    if (m_pendingAck) return; // Already scheduled
+
+    m_pendingAck = true;
+
+    if (!m_ackBatchTimer) {
+        m_ackBatchTimer = new QTimer(this);
+        m_ackBatchTimer->setSingleShot(true);
+        connect(m_ackBatchTimer, &QTimer::timeout, this, [this]() {
+            if (m_pendingAck) {
+                sendAcknowledgement();
+                m_untrackedCount = 0;
+                m_packetsSinceLastAck = 0;
+                m_pendingAck = false;
+            }
+        });
+    }
+
+    // Delay ACK by adaptive interval
+    quint32 delayMs = m_isLowBandwidth ? 300 : 100;
+    m_ackBatchTimer->start(delayMs);
+}
+
+bool SlothRxSocket::isSignificantGap(quint32 seqNum) {
+    quint32 gap = seqNum - m_baseAckSeqNum;
+
+    // Dynamic gap threshold based on bandwidth
+    if (m_isLowBandwidth) {
+        return gap > m_gapThreshold * 2; // More tolerant at low BW
+    } else {
+        return gap > m_gapThreshold;
+    }
+}
+
+
+
+void SlothRxSocket::estimateBandwidth() {
+    if (m_bwMeasureStart.isNull()) {
+        m_bwMeasureStart = QTime::currentTime();
+        return;
+    }
+
+    int elapsedMs = m_bwMeasureStart.msecsTo(QTime::currentTime());
+    if (elapsedMs > 1000) { // Measure over 1 second windows
+        quint32 measuredBw = (m_bwMeasureBytes * 1000) / elapsedMs; // bytes/sec
+
+        // Smooth the estimate (exponential moving average)
+        m_estimatedBandwidth = (m_estimatedBandwidth * 7 + measuredBw) / 8;
+
+        // Reset measurement window
+        m_bwMeasureStart = QTime::currentTime();
+        m_bwMeasureBytes = 0;
+
+#ifdef DEBUG_RX_SOCKET
+        qDebug() << "Estimated bandwidth:" << m_estimatedBandwidth << "bytes/sec";
+#endif
+    }
+}
+
+void SlothRxSocket::optimizeForBandwidth() {
+    m_isLowBandwidth = (m_estimatedBandwidth < 15000); // < 15KB/s
+
+    if (m_isLowBandwidth) {
+        // Low bandwidth optimizations
+        m_minAckInterval = 400; // Minimum 400ms between ACKs
+        m_gapThreshold = 5;     // More tolerant of gaps
+
+        // Reduce NACK frequency even more
+        if (m_nackTimer) {
+            m_nackTimer->setInterval(1500); // 1.5 seconds
+        }
+    } else {
+        // Normal bandwidth settings
+        m_minAckInterval = 100;
+        m_gapThreshold = 3;
+
+        if (m_nackTimer) {
+            m_nackTimer->setInterval(qMax(300U, m_measuredRtt * 2));
+        }
+    }
+}
+
+
+void SlothRxSocket::updateAdaptiveParameters() {
+    if (m_estimatedBandwidth < 5000) {
+        // Very low bandwidth (< 5KB/s): Extreme conservation
+        m_adaptiveAckThreshold = 25;
+        m_adaptiveFeedbackInterval = 2000; // 2 seconds
+    } else if (m_estimatedBandwidth < 15000) {
+        // Low bandwidth (5-15 KB/s): Conservative
+        m_adaptiveAckThreshold = 20;
+        m_adaptiveFeedbackInterval = 1000;
+    } else if (m_estimatedBandwidth < 50000) {
+        // Medium-low bandwidth (15-50 KB/s): Moderate
+        m_adaptiveAckThreshold = 12;
+        m_adaptiveFeedbackInterval = 500;
+    } else if (m_estimatedBandwidth < 200000) {
+        // Medium bandwidth (50-200 KB/s): Standard
+        m_adaptiveAckThreshold = 8;
+        m_adaptiveFeedbackInterval = 200;
+    } else {
+        // High bandwidth (> 200KB/s): Aggressive
+        m_adaptiveAckThreshold = 4;
+        m_adaptiveFeedbackInterval = 100;
+    }
+
+    // RTT-based adjustments
+    if (m_measuredRtt > 300) {
+        m_adaptiveAckThreshold = qMax(4U, m_adaptiveAckThreshold / 2);
+    }
+}
+
+
+void SlothRxSocket::sendAcknowledgement() {
+    QTime now = QTime::currentTime();
+
+    // Rate limit ACKs to respect minimum interval
+    if (m_minAckInterval > 0 && m_lastAckTime.msecsTo(now) < (int)m_minAckInterval) {
+        // Schedule delayed ACK instead of immediate
+        scheduleDelayedAck();
+        return;
+    }
+
+    // Adaptive bitmap size based on bandwidth
+    int bitmapSize;
+    if (m_isLowBandwidth) {
+        bitmapSize = 8;  // 64 bits - smaller for low BW
+    } else if (m_estimatedBandwidth < 100000) {
+        bitmapSize = 12; // 96 bits - medium
+    } else {
+        bitmapSize = 16; // 128 bits - larger for high BW
+    }
+
     QByteArray bitmap = generateAckBitmap(m_baseAckSeqNum, bitmapSize * 8);
 
     AckWindowPacket packet;
@@ -268,11 +416,10 @@ void SlothRxSocket::sendAcknowledgement()
     fullStream.writeRawData(payload.constData(), payload.size());
 
 #ifdef DEBUG_RX_SOCKET
-    qDebug() << "SlothRX ACK with base " << m_baseAckSeqNum << " ===> ";
-    SlothPacketUtils::logBitMap(bitmap);
+    qDebug() << "SlothRX ACK (rate-limited) with base " << m_baseAckSeqNum;
 #endif
 
-    m_lastAckTime = QTime::currentTime();
+    m_lastAckTime = now;
     transmitBuffer(fullBuffer);
 }
 
@@ -311,24 +458,31 @@ QByteArray SlothRxSocket::generateAckBitmap(quint32 base, int windowSize)
     return bitmap;
 }
 
-void SlothRxSocket::handleNackTimeout()
-{
-    QSet<quint32> currentMissing;
+void SlothRxSocket::handleNackTimeout() {
+    // Skip NACK if we're in a silent period (just received packets)
+    QTime now = QTime::currentTime();
+    if (m_silentPeriodMs > 0 && m_lastSignificantGap.msecsTo(now) < (int)m_silentPeriodMs) {
+        return;
+    }
 
-    // Check for gaps in received sequence numbers
+    QSet<quint32> currentMissing;
     for (quint32 i = m_baseAckSeqNum; i <= m_highestSeqReceived; ++i) {
         if (!m_receivedSeqNums.contains(i)) {
             currentMissing.insert(i);
         }
     }
 
-    // Update packet loss stats
     m_stats.totalPacketsLost = currentMissing.size();
 
-    // Only send NACK if we have significant gaps and haven't sent one recently
-    if (!currentMissing.isEmpty() && currentMissing.size() <= 20) { // Limit NACK size
-        QTime now = QTime::currentTime();
-        if (m_lastNackTime.msecsTo(now) >= 200) { // Don't spam NACKs
+    // More conservative NACK strategy
+    quint32 maxNackSize = m_isLowBandwidth ? 10 : 30;
+    quint32 minNackInterval = m_isLowBandwidth ? 2000 : 500;
+
+    if (!currentMissing.isEmpty() &&
+        currentMissing.size() <= maxNackSize &&
+        currentMissing.size() >= 3) { // Only NACK if we have several missing
+
+        if (m_lastNackTime.msecsTo(now) >= (int)minNackInterval) {
             m_pendingMissing = currentMissing;
             scheduleNackDebounce();
             m_lastNackTime = now;
@@ -410,35 +564,41 @@ void SlothRxSocket::sendNack(QList<quint32> missing)
     transmitBuffer(full);
 }
 
-void SlothRxSocket::handleFeedbackTimeout()
-{
+void SlothRxSocket::handleFeedbackTimeout() {
     QTime now = QTime::currentTime();
     int ms = m_lastAckTime.msecsTo(now);
 
-    // Send ACK if no feedback sent recently (reduced from 200ms to 100ms)
-    if (ms >= 100) {
-#ifdef DEBUG_RX_SOCKET
-        qDebug() << "Feedback timeout - sending ACK";
-#endif
+    // Adaptive feedback timeout based on bandwidth
+    quint32 timeoutMs = m_adaptiveFeedbackInterval;
+
+    if (ms >= (int)timeoutMs) {
         sendAcknowledgement();
+    }
+
+    // Update timer interval if it changed
+    if (m_feedbackTimer->interval() != (int)m_adaptiveFeedbackInterval) {
+        m_feedbackTimer->setInterval(m_adaptiveFeedbackInterval);
     }
 }
 
-void SlothRxSocket::startFeedbackTimers()
-{
+void SlothRxSocket::startFeedbackTimers() {
     m_nackTimer = new QTimer(this);
     m_feedbackTimer = new QTimer(this);
 
     connect(m_nackTimer, &QTimer::timeout, this, &SlothRxSocket::handleNackTimeout);
     connect(m_feedbackTimer, &QTimer::timeout, this, &SlothRxSocket::handleFeedbackTimeout);
 
-    // More frequent timers for better responsiveness
-    m_nackTimer->start(250);     // Reduced from 500ms
-    m_feedbackTimer->start(50);  // Reduced from 500ms for quicker ACK sending
+    // Start with conservative timing, will adapt
+    m_nackTimer->start(qMax(500U, m_measuredRtt * 3));
+    m_feedbackTimer->start(m_adaptiveFeedbackInterval);
 
     m_lastAckTime = QTime::currentTime();
     m_lastNackTime = QTime::currentTime();
+
+    // Initialize bandwidth measurement
+    m_bwMeasureStart = QTime::currentTime();
 }
+
 
 void SlothRxSocket::startProgressTimer()
 {
@@ -457,30 +617,23 @@ void SlothRxSocket::stopProgressTimer()
     }
 }
 
-void SlothRxSocket::printProgress()
-{
+void SlothRxSocket::printProgress() {
     QTime now = QTime::currentTime();
     int elapsedMs = m_progressStartTime.msecsTo(now);
 
-    if (elapsedMs == 0) return; // Avoid division by zero
+    if (elapsedMs == 0) return;
 
     double elapsedSec = elapsedMs / 1000.0;
     double progressPercent = (m_expectedFileSize > 0) ?
                                  (double(m_stats.uniqueBytesReceived) / m_expectedFileSize) * 100.0 : 0.0;
 
     double bytesPerSec = m_stats.uniqueBytesReceived / elapsedSec;
-    double mbps = (bytesPerSec * 8) / (1024 * 1024); // Convert to Mbps
+    double mbps = (bytesPerSec * 8) / (1024 * 1024);
 
     double efficiency = (m_stats.totalBytesReceived > 0) ?
                             (double(m_stats.uniqueBytesReceived) / m_stats.totalBytesReceived) * 100.0 : 0.0;
 
-    double lossRate = (m_stats.totalPacketsReceived > 0) ?
-                          (double(m_stats.totalPacketsLost) / (m_stats.totalPacketsReceived + m_stats.totalPacketsLost)) * 100.0 : 0.0;
-
-    double duplicateRate = (m_stats.totalPacketsReceived > 0) ?
-                               (double(m_stats.duplicatePacketsReceived) / m_stats.totalPacketsReceived) * 100.0 : 0.0;
-
-    qInfo() << "=== RX PROGRESS ===";
+    qInfo() << "=== ADAPTIVE RX PROGRESS ===";
     qInfo() << QString("Progress: %1% (%2/%3 bytes)")
                    .arg(progressPercent, 0, 'f', 1)
                    .arg(m_stats.uniqueBytesReceived)
@@ -488,23 +641,17 @@ void SlothRxSocket::printProgress()
     qInfo() << QString("Speed: %1 Mbps (%2 KB/s)")
                    .arg(mbps, 0, 'f', 2)
                    .arg(bytesPerSec / 1024, 0, 'f', 1);
-    qInfo() << QString("Efficiency: %1% (Unique: %2, Total: %3)")
+    qInfo() << QString("Estimated BW: %1 KB/s, RTT: %2ms")
+                   .arg(m_estimatedBandwidth / 1024)
+                   .arg(m_measuredRtt);
+    qInfo() << QString("Adaptive Params - ACK Threshold: %1, Feedback Interval: %2ms")
+                   .arg(m_adaptiveAckThreshold)
+                   .arg(m_adaptiveFeedbackInterval);
+    qInfo() << QString("Efficiency: %1% Window: Base=%2, Buffered=%3")
                    .arg(efficiency, 0, 'f', 1)
-                   .arg(m_stats.uniqueBytesReceived)
-                   .arg(m_stats.totalBytesReceived);
-    qInfo() << QString("Packet Loss: %1% (Missing: %2)")
-                   .arg(lossRate, 0, 'f', 2)
-                   .arg(m_stats.totalPacketsLost);
-    qInfo() << QString("Duplicates: %1% (%2/%3), Out-of-Order: %4")
-                   .arg(duplicateRate, 0, 'f', 2)
-                   .arg(m_stats.duplicatePacketsReceived)
-                   .arg(m_stats.totalPacketsReceived)
-                   .arg(m_stats.outOfOrderPackets);
-    qInfo() << QString("Window: Base=%1, Highest=%2, Buffered=%3")
                    .arg(m_baseWriteSeqNum)
-                   .arg(m_highestSeqReceived)
                    .arg(m_recvWindow.size());
-    qInfo() << "==================";
+    qInfo() << "============================";
 }
 
 void SlothRxSocket::printFinalStats()
@@ -563,9 +710,8 @@ void SlothRxSocket::handleFinPacket(PacketHeader header)
 }
 
 
-void SlothRxSocket::performReceiveCleanup(bool successful)
-{
-    if (m_transferCompleted) return; // Prevent double cleanup
+void SlothRxSocket::performReceiveCleanup(bool successful) {
+    if (m_transferCompleted) return;
 
     m_transferCompleted = true;
 
@@ -584,14 +730,19 @@ void SlothRxSocket::performReceiveCleanup(bool successful)
         m_feedbackTimer = nullptr;
     }
 
-    // Final file operations
+    if (m_ackBatchTimer) {
+        m_ackBatchTimer->stop();
+        m_ackBatchTimer->deleteLater();
+        m_ackBatchTimer = nullptr;
+    }
+
+    // Rest of cleanup code remains the same...
     if (m_file.isOpen()) {
-        m_file.flush(); // Ensure all data is written to disk
+        m_file.flush();
         m_file.close();
         qInfo() << "File closed successfully:" << m_filePath;
     }
 
-    // Print final statistics
     printFinalStats();
 
     if (successful) {
@@ -600,19 +751,14 @@ void SlothRxSocket::performReceiveCleanup(bool successful)
         qWarning() << "=== FILE TRANSFER INCOMPLETE ===";
     }
 
-    // Send BYE confirmation to sender
     sendByeConfirmation();
 
-    // Clean up state
     m_recvWindow.clear();
     m_receivedSeqNums.clear();
     m_pendingMissing.clear();
-
-    // Reset session state
     m_sessionState = SessionState::NOTACTIVE;
     m_activeSessionId = 0;
 
-    // Emit completion signal to application
     emit transferCompleted(successful, m_filePath, m_stats.uniqueBytesReceived,
                            m_progressStartTime.msecsTo(QTime::currentTime()));
 

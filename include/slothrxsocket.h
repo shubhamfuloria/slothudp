@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QTimer>
 #include <QTime>
+#include <QQueue>
 
 #include <include/types.h>
 
@@ -109,6 +110,42 @@ private:
         quint32 totalPacketsLost = 0;
         quint32 outOfOrderPackets = 0;
     } m_stats;
+
+    // Adaptive parameters
+    quint32 m_estimatedBandwidth = 50000;  // Start with 50KB/s estimate
+    quint32 m_measuredRtt = 100;           // RTT in milliseconds
+    quint32 m_adaptiveAckThreshold = 8;    // Dynamic ACK threshold
+    quint32 m_adaptiveFeedbackInterval = 200; // Dynamic feedback interval
+
+    // Bandwidth estimation
+    QTime m_bwMeasureStart;
+    quint64 m_bwMeasureBytes = 0;
+    quint32 m_consecutivePackets = 0;
+
+    // RTT measurement
+    QTime m_lastAckSent;
+    QQueue<QTime> m_rttSamples;
+
+    void estimateBandwidth();
+    void updateAdaptiveParameters();
+    void measureRtt();
+
+    bool m_isLowBandwidth = false;
+    quint32 m_silentPeriodMs = 0;
+    QTime m_lastSignificantGap;
+    quint32 m_gapThreshold = 3; // Define "significant gap"
+
+    // Batched ACK optimization
+    bool m_pendingAck = false;
+    QTimer* m_ackBatchTimer = nullptr;
+
+    // Reduced control packet overhead
+    quint32 m_minAckInterval = 0;
+    quint32 m_packetsSinceLastAck = 0;
+
+    void scheduleDelayedAck();
+    bool isSignificantGap(quint32 seqNum);
+    void optimizeForBandwidth();
 
 private slots:
     void handleReadyRead();
