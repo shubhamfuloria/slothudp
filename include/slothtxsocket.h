@@ -15,6 +15,38 @@ class SlothTxSocket : public QUdpSocket
     Q_OBJECT
 
 public:
+
+
+    // Structure to hold transmission statistics
+    struct TransmissionStats {
+        // Timing
+        quint64 transferStartTime;      // Start time in milliseconds since epoch
+
+        // Byte counters
+        quint64 totalBytesSent;         // Total bytes sent (including retransmissions)
+        quint64 uniqueBytesSent;        // Unique bytes sent (actual file progress)
+
+        // Packet counters
+        quint64 totalPacketsSent;       // Total packets sent (including retransmissions)
+        quint64 totalPacketsLost;       // Total packets that were lost
+
+        // Error counters
+        quint64 totalRetransmissions;   // Number of retransmissions
+        quint64 totalTimeouts;          // Number of timeout events
+
+        // Constructor to initialize all members
+        TransmissionStats() :
+            transferStartTime(0),
+            totalBytesSent(0),
+            uniqueBytesSent(0),
+            totalPacketsSent(0),
+            totalPacketsLost(0),
+            totalRetransmissions(0),
+            totalTimeouts(0)
+        {}
+    };
+
+
     SlothTxSocket();
 
     /**
@@ -87,6 +119,7 @@ private:
     quint64 m_devRTT = 0;
     quint64 m_RTO = 1000; // retransmission timeout
     QTimer* m_retransmitTimer = nullptr;
+    QTimer* m_progressTimer = nullptr;
 
 
     QHash<quint32, QByteArray>m_sendWindow;
@@ -104,7 +137,7 @@ private:
      */
     int m_handshakeReqRetryLimit = 5;
     int m_handshakeReqRetryCount = 0;
-
+    TransmissionStats m_stats;
     QTimer* m_handshakeRetryTimer = nullptr;
 
     // Adaptive Window Control
@@ -139,6 +172,16 @@ private:
     void updateRTTAndBandwidth(quint32 seq, quint64 now);
     void handleSuccessfulAck(quint32 newlyAckedPackets, quint64 now);
 
+    // progress tracking
+    void initializeProgressTracking();
+
+    // tear off once the file transfer is complete
+    QTimer* m_finRetryTimer = nullptr;
+    int m_finRetryCount = 0;
+    static const int m_finRetryLimit = 5;
+    bool m_transferCompleted = false;
+    void performTransferCleanup();
+
 private slots:
     /**
      * @brief handleReadyRead: gets triggered when the socket receives some datagram
@@ -146,6 +189,12 @@ private slots:
     void handleReadyRead();
 
     void handleRetransmissions();
+
+    void printTransmissionProgress();
+
+signals:
+    void transferCompleted(bool, QString, quint64,
+                                          quint64);
 
 
 

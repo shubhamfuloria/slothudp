@@ -30,7 +30,10 @@ int main(int argc, char *argv[])
     txThread->start();
 
     QMetaObject::invokeMethod(tx, [=]() {
-            tx->initiateHandshake("C:/Users/Shubham/Videos/test.zip", 50, "127.0.0.1", 5000);
+            QString filePath = "C:/Users/Shubham/Videos/test.jpg";
+            QFile file(filePath);
+            qDebug() << "size is: " << file.size();
+            tx->initiateHandshake(filePath, file.size(), "127.0.0.1", 5000);
         }, Qt::QueuedConnection);
 
     return a.exec();

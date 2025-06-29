@@ -89,14 +89,40 @@ private:
     quint32 m_activeSessionId = 0;
     SessionState m_sessionState = SessionState::NOTACTIVE;
 
+    // Progress tracking
+    QTimer* m_progressTimer = nullptr;
+    QTime m_progressStartTime;
+    quint64 m_expectedFileSize = 0;
+
+    bool m_transferCompleted = false;
+    QTimer* m_byeConfirmTimer = nullptr;
+    void handleFinPacket(PacketHeader header);
+    void sendByeConfirmation();
+    void performReceiveCleanup(bool successful);
+
+    // Statistics structure
+    struct RxStats {
+        quint64 totalBytesReceived = 0;
+        quint64 uniqueBytesReceived = 0;
+        quint32 totalPacketsReceived = 0;
+        quint32 duplicatePacketsReceived = 0;
+        quint32 totalPacketsLost = 0;
+        quint32 outOfOrderPackets = 0;
+    } m_stats;
 
 private slots:
     void handleReadyRead();
     void handleNackTimeout();
     void handleFeedbackTimeout();
+    void startProgressTimer();
+    void stopProgressTimer();
+    void printProgress();
+    void printFinalStats();
 
 signals:
     void on_fileTxRequest(QString fileName, quint64 fileSize, QString hostAddress);
+    void transferCompleted(bool, QString, quint64, quint64);
+
 };
 
 #endif // SLOTHTXSOCKET_H

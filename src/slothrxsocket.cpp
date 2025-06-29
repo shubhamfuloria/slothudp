@@ -5,8 +5,17 @@
 #include <QIODevice>
 #include <QDataStream>
 
-SlothRxSocket::SlothRxSocket() {
+// #define DEBUG_RX_SOCKET
 
+SlothRxSocket::SlothRxSocket() {
+    // Initialize stats
+    m_stats.totalBytesReceived = 0;
+    m_stats.uniqueBytesReceived = 0;
+    m_stats.totalPacketsReceived = 0;
+    m_stats.duplicatePacketsReceived = 0;
+    m_stats.totalPacketsLost = 0;
+    m_stats.outOfOrderPackets = 0;
+    m_progressStartTime = QTime::currentTime();
 
     bool success = bind(5000);
 
@@ -22,6 +31,7 @@ void SlothRxSocket::handleReadyRead()
     while(hasPendingDatagrams()) {
         QNetworkDatagram datagram = receiveDatagram(4096);
         QByteArray buffer = datagram.data();
+        m_stats.totalBytesReceived += buffer.size();
 
         QByteArray payload;
         PacketHeader header;
@@ -50,27 +60,40 @@ void SlothRxSocket::handleReadyRead()
 
         case PacketType::DATA:
             // data packet, write it to file
+            m_stats.totalPacketsReceived++;
 
-            // qDebug() << "SlothRx:: received data packet";
+#ifdef DEBUG_RX_SOCKET
+            qDebug() << "SlothRx:: received data packet";
+#endif
             handlePacket(header, payload);
 
             break;
 
         case PacketType::FIN:
+#ifdef DEBUG_RX_SOCKET
             qDebug() << "Recieved fin packet, we're safe to close the file now";
-            // we should send sender a confirmation packet and tear down connection
-
-            m_file.close();
+#endif
+            handleFinPacket(header);
+            // // we should send sender a confirmation packet and tear down connection
+    //         stopProgressTimer();
+    //         printFinalStats();
+    //         m_file.close();
             break;
 
         default:
+#ifdef DEBUG_RX_SOCKET
             qDebug() << "SlothRx: Packet type not handled";
+#endif
+            break;
         }
     }
 }
+
 void SlothRxSocket::handleHandshakePacket(QByteArray buffer)
 {
+#ifdef DEBUG_RX_SOCKET
     qDebug() << "handling handshake packet";
+#endif
     HandshakePacket packet = SlothPacketUtils::deserializePacket(buffer);
 
     /*
@@ -80,9 +103,13 @@ void SlothRxSocket::handleHandshakePacket(QByteArray buffer)
 
     if (m_sessionState != SessionState::NOTACTIVE) {
         if (packet.requestId == m_activeSessionId) {
+#ifdef DEBUG_RX_SOCKET
             qDebug() << "Duplicate handshake packet received. Ignoring.";
+#endif
         } else {
+#ifdef DEBUG_RX_SOCKET
             qDebug() << "Another session is already active. Rejecting new handshake.";
+#endif
         }
         return;
     }
@@ -99,6 +126,7 @@ void SlothRxSocket::handleHandshakePacket(QByteArray buffer)
 
     m_activeSessionId = packet.requestId;
     m_sessionState = SessionState::REQPENDING;
+    m_expectedFileSize = packet.totalSize;
 
     // notify the application about the request
     emit on_fileTxRequest(packet.filename, packet.totalSize, m_txAddress.toString());
@@ -114,12 +142,10 @@ void SlothRxSocket::handleHandshakePacket(QByteArray buffer)
 
     // acknowledgeTxRequest(packet.requestId);
 
-
     QMetaObject::invokeMethod(this, [=]() {
-                acknowledgeTxRequest(packet.requestId);
-            }, Qt::QueuedConnection);
+            acknowledgeTxRequest(packet.requestId);
+        }, Qt::QueuedConnection);
 }
-
 
 bool SlothRxSocket::acknowledgeTxRequest(quint32 requestId)
 {
@@ -132,9 +158,13 @@ bool SlothRxSocket::acknowledgeTxRequest(quint32 requestId)
 
     m_file.setFileName(m_filePath);
     if(!m_file.open(OpenModeFlag::Truncate | OpenModeFlag::WriteOnly)) {
+#ifdef DEBUG_RX_SOCKET
         qDebug() << "Could not open file " << m_filePath;
+#endif
     } else {
+#ifdef DEBUG_RX_SOCKET
         qDebug() << "Opened Successfully file " << m_filePath;
+#endif
     }
 
     /*
@@ -143,31 +173,43 @@ bool SlothRxSocket::acknowledgeTxRequest(quint32 requestId)
     */
 
     startFeedbackTimers();
+    startProgressTimer();
+
     return transmitBuffer(buffer);
 }
-
 
 void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
 
     if(header.sequenceNumber < m_baseWriteSeqNum) {
+#ifdef DEBUG_RX_SOCKET
         qDebug() << "Already written packet " << header.sequenceNumber;
-        // Still send ACK for old packets to help sender advance
+#endif \
+    // Still send ACK for old packets to help sender advance
+        m_stats.duplicatePacketsReceived++;
         if (m_untrackedCount == 0) {
             m_untrackedCount = 8; // Force ACK send
         }
         return;
     }
 
+    // Check if this is an out-of-order packet
+    if (header.sequenceNumber > m_baseWriteSeqNum) {
+        m_stats.outOfOrderPackets++;
+    }
+
     m_highestSeqReceived = qMax(m_highestSeqReceived, header.sequenceNumber);
     m_recvWindow[header.sequenceNumber] = payload;
     m_receivedSeqNums.insert(header.sequenceNumber);
 
+#ifdef DEBUG_RX_SOCKET
     qDebug() << "SlothRX <=== DATA seq " << header.sequenceNumber << ", untrackedCount: " << m_untrackedCount;
+#endif
 
     // Write continuous packets to file
     while(m_recvWindow.contains(m_baseWriteSeqNum)) {
         QByteArray chunk = m_recvWindow[m_baseWriteSeqNum];
         m_file.write(chunk);
+        m_stats.uniqueBytesReceived += chunk.size();
         m_recvWindow.remove(m_baseWriteSeqNum);
         m_baseWriteSeqNum++;
     }
@@ -183,7 +225,9 @@ void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
     bool hasGap = (header.sequenceNumber > m_baseAckSeqNum);
 
     if (m_untrackedCount >= 4 || hasGap) { // Reduced from 8 to 4 for faster feedback
+#ifdef DEBUG_RX_SOCKET
         qDebug() << "Sending acknowledgement (gap detected: " << hasGap << ")";
+#endif
         sendAcknowledgement();
         m_untrackedCount = 0;
     }
@@ -223,13 +267,14 @@ void SlothRxSocket::sendAcknowledgement()
 
     fullStream.writeRawData(payload.constData(), payload.size());
 
+#ifdef DEBUG_RX_SOCKET
     qDebug() << "SlothRX ACK with base " << m_baseAckSeqNum << " ===> ";
     SlothPacketUtils::logBitMap(bitmap);
+#endif
 
     m_lastAckTime = QTime::currentTime();
     transmitBuffer(fullBuffer);
 }
-
 
 bool SlothRxSocket::transmitBuffer(const QByteArray& buffer)
 {
@@ -277,6 +322,9 @@ void SlothRxSocket::handleNackTimeout()
         }
     }
 
+    // Update packet loss stats
+    m_stats.totalPacketsLost = currentMissing.size();
+
     // Only send NACK if we have significant gaps and haven't sent one recently
     if (!currentMissing.isEmpty() && currentMissing.size() <= 20) { // Limit NACK size
         QTime now = QTime::currentTime();
@@ -288,15 +336,12 @@ void SlothRxSocket::handleNackTimeout()
     }
 }
 
-
-
 void SlothRxSocket::scheduleNackDebounce() {
     if (m_nackDebounceScheduled) return;
 
     m_nackDebounceScheduled = true;
     QTimer::singleShot(100, this, &SlothRxSocket::performNackDebounce);
 }
-
 
 void SlothRxSocket::performNackDebounce() {
     QSet<quint32> stillMissing;
@@ -314,7 +359,6 @@ void SlothRxSocket::performNackDebounce() {
     m_nackDebounceScheduled = false;
 }
 
-
 void SlothRxSocket::sendNack(QList<quint32> missing)
 {
     if (missing.isEmpty() || missing.size() > 50) return; // Don't send huge NACKs
@@ -330,7 +374,9 @@ void SlothRxSocket::sendNack(QList<quint32> missing)
     quint32 range = missing.last() - base + 1;
     int windowSize = qMin((int)range, 64); // Limit bitmap size
 
+#ifdef DEBUG_RX_SOCKET
     qDebug() << "Sending NACK for base " << base << ", count:" << missing.size();
+#endif
     QByteArray bitmap = SlothPacketUtils::generateBitmapFromSet(base, windowSize, missingSet);
 
     NackPacket packet;
@@ -364,7 +410,6 @@ void SlothRxSocket::sendNack(QList<quint32> missing)
     transmitBuffer(full);
 }
 
-
 void SlothRxSocket::handleFeedbackTimeout()
 {
     QTime now = QTime::currentTime();
@@ -372,7 +417,9 @@ void SlothRxSocket::handleFeedbackTimeout()
 
     // Send ACK if no feedback sent recently (reduced from 200ms to 100ms)
     if (ms >= 100) {
+#ifdef DEBUG_RX_SOCKET
         qDebug() << "Feedback timeout - sending ACK";
+#endif
         sendAcknowledgement();
     }
 }
@@ -391,6 +438,210 @@ void SlothRxSocket::startFeedbackTimers()
 
     m_lastAckTime = QTime::currentTime();
     m_lastNackTime = QTime::currentTime();
+}
+
+void SlothRxSocket::startProgressTimer()
+{
+    m_progressTimer = new QTimer(this);
+    connect(m_progressTimer, &QTimer::timeout, this, &SlothRxSocket::printProgress);
+    m_progressTimer->start(1000); // Print progress every second
+    m_progressStartTime = QTime::currentTime();
+}
+
+void SlothRxSocket::stopProgressTimer()
+{
+    if (m_progressTimer) {
+        m_progressTimer->stop();
+        delete m_progressTimer;
+        m_progressTimer = nullptr;
+    }
+}
+
+void SlothRxSocket::printProgress()
+{
+    QTime now = QTime::currentTime();
+    int elapsedMs = m_progressStartTime.msecsTo(now);
+
+    if (elapsedMs == 0) return; // Avoid division by zero
+
+    double elapsedSec = elapsedMs / 1000.0;
+    double progressPercent = (m_expectedFileSize > 0) ?
+                                 (double(m_stats.uniqueBytesReceived) / m_expectedFileSize) * 100.0 : 0.0;
+
+    double bytesPerSec = m_stats.uniqueBytesReceived / elapsedSec;
+    double mbps = (bytesPerSec * 8) / (1024 * 1024); // Convert to Mbps
+
+    double efficiency = (m_stats.totalBytesReceived > 0) ?
+                            (double(m_stats.uniqueBytesReceived) / m_stats.totalBytesReceived) * 100.0 : 0.0;
+
+    double lossRate = (m_stats.totalPacketsReceived > 0) ?
+                          (double(m_stats.totalPacketsLost) / (m_stats.totalPacketsReceived + m_stats.totalPacketsLost)) * 100.0 : 0.0;
+
+    double duplicateRate = (m_stats.totalPacketsReceived > 0) ?
+                               (double(m_stats.duplicatePacketsReceived) / m_stats.totalPacketsReceived) * 100.0 : 0.0;
+
+    qInfo() << "=== RX PROGRESS ===";
+    qInfo() << QString("Progress: %1% (%2/%3 bytes)")
+                   .arg(progressPercent, 0, 'f', 1)
+                   .arg(m_stats.uniqueBytesReceived)
+                   .arg(m_expectedFileSize);
+    qInfo() << QString("Speed: %1 Mbps (%2 KB/s)")
+                   .arg(mbps, 0, 'f', 2)
+                   .arg(bytesPerSec / 1024, 0, 'f', 1);
+    qInfo() << QString("Efficiency: %1% (Unique: %2, Total: %3)")
+                   .arg(efficiency, 0, 'f', 1)
+                   .arg(m_stats.uniqueBytesReceived)
+                   .arg(m_stats.totalBytesReceived);
+    qInfo() << QString("Packet Loss: %1% (Missing: %2)")
+                   .arg(lossRate, 0, 'f', 2)
+                   .arg(m_stats.totalPacketsLost);
+    qInfo() << QString("Duplicates: %1% (%2/%3), Out-of-Order: %4")
+                   .arg(duplicateRate, 0, 'f', 2)
+                   .arg(m_stats.duplicatePacketsReceived)
+                   .arg(m_stats.totalPacketsReceived)
+                   .arg(m_stats.outOfOrderPackets);
+    qInfo() << QString("Window: Base=%1, Highest=%2, Buffered=%3")
+                   .arg(m_baseWriteSeqNum)
+                   .arg(m_highestSeqReceived)
+                   .arg(m_recvWindow.size());
+    qInfo() << "==================";
+}
+
+void SlothRxSocket::printFinalStats()
+{
+    QTime now = QTime::currentTime();
+    int elapsedMs = m_progressStartTime.msecsTo(now);
+    double elapsedSec = elapsedMs / 1000.0;
+
+    double avgBytesPerSec = (elapsedSec > 0) ? m_stats.uniqueBytesReceived / elapsedSec : 0;
+    double avgMbps = (avgBytesPerSec * 8) / (1024 * 1024);
+
+    double efficiency = (m_stats.totalBytesReceived > 0) ?
+                            (double(m_stats.uniqueBytesReceived) / m_stats.totalBytesReceived) * 100.0 : 0.0;
+
+    qInfo() << "=== RX FINAL STATS ===";
+    qInfo() << QString("Total Time: %1 seconds").arg(elapsedSec, 0, 'f', 2);
+    qInfo() << QString("Average Speed: %1 Mbps (%2 KB/s)")
+                   .arg(avgMbps, 0, 'f', 2)
+                   .arg(avgBytesPerSec / 1024, 0, 'f', 1);
+    qInfo() << QString("Final Efficiency: %1%").arg(efficiency, 0, 'f', 1);
+    qInfo() << QString("Total Packets: %1, Duplicates: %2, Out-of-Order: %3")
+                   .arg(m_stats.totalPacketsReceived)
+                   .arg(m_stats.duplicatePacketsReceived)
+                   .arg(m_stats.outOfOrderPackets);
+    qInfo() << "=====================";
+}
+
+void SlothRxSocket::handleFinPacket(PacketHeader header)
+{
+    if (m_transferCompleted) {
+        // Duplicate FIN - just resend BYE
+        sendByeConfirmation();
+        return;
+    }
+
+    // Verify all expected data was received
+    bool allDataReceived = (m_stats.uniqueBytesReceived >= m_expectedFileSize);
+
+    if (!allDataReceived) {
+        qWarning() << QString("Transfer incomplete! Expected: %1, Received: %2")
+                          .arg(m_expectedFileSize)
+                          .arg(m_stats.uniqueBytesReceived);
+
+        // Send final NACK for any remaining missing packets
+        handleNackTimeout();
+
+        // Set a timeout to force completion if missing packets aren't recovered
+        QTimer::singleShot(2000, this, [=]() {
+            qWarning() << "Forcing transfer completion despite missing data";
+            performReceiveCleanup(false); // false = incomplete
+        });
+        return;
+    }
+
+    performReceiveCleanup(true); // true = successful
+}
+
+
+void SlothRxSocket::performReceiveCleanup(bool successful)
+{
+    if (m_transferCompleted) return; // Prevent double cleanup
+
+    m_transferCompleted = true;
+
+    // Stop all timers
+    stopProgressTimer();
+
+    if (m_nackTimer) {
+        m_nackTimer->stop();
+        m_nackTimer->deleteLater();
+        m_nackTimer = nullptr;
+    }
+
+    if (m_feedbackTimer) {
+        m_feedbackTimer->stop();
+        m_feedbackTimer->deleteLater();
+        m_feedbackTimer = nullptr;
+    }
+
+    // Final file operations
+    if (m_file.isOpen()) {
+        m_file.flush(); // Ensure all data is written to disk
+        m_file.close();
+        qInfo() << "File closed successfully:" << m_filePath;
+    }
+
+    // Print final statistics
+    printFinalStats();
+
+    if (successful) {
+        qInfo() << "=== FILE RECEIVED SUCCESSFULLY ===";
+    } else {
+        qWarning() << "=== FILE TRANSFER INCOMPLETE ===";
+    }
+
+    // Send BYE confirmation to sender
+    sendByeConfirmation();
+
+    // Clean up state
+    m_recvWindow.clear();
+    m_receivedSeqNums.clear();
+    m_pendingMissing.clear();
+
+    // Reset session state
+    m_sessionState = SessionState::NOTACTIVE;
+    m_activeSessionId = 0;
+
+    // Emit completion signal to application
+    emit transferCompleted(successful, m_filePath, m_stats.uniqueBytesReceived,
+                           m_progressStartTime.msecsTo(QTime::currentTime()));
+
+    qInfo() << "Receiver cleanup completed";
+}
+
+// Enhanced sendByeConfirmation method:
+void SlothRxSocket::sendByeConfirmation()
+{
+    PacketHeader header(PacketType::BYE, m_activeSessionId, 0);
+    QByteArray buffer = header.serialize(0);
+
+    qInfo() << "Sending BYE confirmation to transmitter";
+    transmitBuffer(buffer);
+
+    // Send BYE multiple times to ensure delivery (since UDP is unreliable)
+    m_byeConfirmTimer = new QTimer(this);
+    int byeCount = 0;
+
+    connect(m_byeConfirmTimer, &QTimer::timeout, this, [=]() mutable {
+        if (++byeCount >= 3) {
+            m_byeConfirmTimer->stop();
+            m_byeConfirmTimer->deleteLater();
+            return;
+        }
+        transmitBuffer(buffer);
+    });
+
+    m_byeConfirmTimer->start(500); // Send BYE 3 times with 500ms intervals
 }
 
 
