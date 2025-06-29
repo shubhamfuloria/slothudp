@@ -5,7 +5,7 @@
 #include <QDebug>
 #include <QDataStream>
 
-#include <QMap>
+#include <QHash>
 
 const int PACKET_HEADER_SIZE = sizeof(quint8) + sizeof(quint32) + (3 * sizeof(quint16));
 
@@ -41,7 +41,7 @@ struct PacketHeader {
     }
     void print() {
 
-        QMap<int,QString> names = {{0, "DATA"}, {1, "ACK"}, {2, "NACK"}, {3, "HANDSHAKE"},
+        QHash<int,QString> names = {{0, "DATA"}, {1, "ACK"}, {2, "NACK"}, {3, "HANDSHAKE"},
                                         {4, "HANDSHAKEACK"}, {5, "FIN"}, {6, "BYE"}};
         qDebug() <<
             QString("Packet Type: %1, Seq: %2, payloadSize: %3, headerChecksum: %4, checksum: %5")

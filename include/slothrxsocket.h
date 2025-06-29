@@ -73,7 +73,7 @@ private:
      * @brief m_untrackedCount represents packet which are received, but we haven't sent acknowledgment for them yet.
      */
     int m_untrackedCount;
-    QMap<quint32, QByteArray>m_recvWindow;
+    QHash<quint32, QByteArray>m_recvWindow;
     QSet<quint32> m_receivedSeqNums;
 
 
@@ -82,6 +82,7 @@ private:
     QTimer* m_nackTimer = nullptr;
     QTimer* m_feedbackTimer = nullptr;
     QTime m_lastAckTime;
+    QTime m_lastNackTime;
     quint32 m_highestSeqReceived = 0;
     bool m_nackDebounceScheduled = false;
 

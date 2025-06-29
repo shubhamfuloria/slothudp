@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QQueue>
 
 #include <include/types.h>
 
@@ -81,17 +82,17 @@ private:
     int m_chunkSize = 1024;
     quint8 m_protoVer = 1;
     QElapsedTimer* m_rttTimer = nullptr;
-    QMap<quint32, quint64> m_sentTimestamp; // seql -> milisecond, to calculate RTT
+    QHash<quint32, quint64> m_sentTimestamp; // seql -> milisecond, to calculate RTT
     double m_estimatedRTT = 300.0;
     quint64 m_devRTT = 0;
     quint64 m_RTO = 1000; // retransmission timeout
     QTimer* m_retransmitTimer = nullptr;
 
 
-    QMap<quint32, QByteArray>m_sendWindow;
-    QMap<quint32, QByteArray>m_inFlightWindow;
+    QHash<quint32, QByteArray>m_sendWindow;
+    QHash<quint32, QByteArray>m_inFlightWindow;
     QSet<quint32> m_missingWindow; // contains nack ids received from client
-    QMap<quint32, quint64> m_lastRextTime;
+    QHash<quint32, quint64> m_lastRextTime;
 
     quint32 m_activeSessionId;
     SessionState m_sessionState = SessionState::NOTACTIVE;
@@ -105,6 +106,38 @@ private:
     int m_handshakeReqRetryCount = 0;
 
     QTimer* m_handshakeRetryTimer = nullptr;
+
+    // Adaptive Window Control
+    quint32 m_congestionWindow = 10;      // Current congestion window
+    quint32 m_slowStartThreshold = 65535; // Slow start threshold
+    quint32 m_maxWindow = 100;            // Maximum allowed window
+    quint32 m_minWindow = 4;              // Minimum window size
+
+    // Performance monitoring
+    quint64 m_lastWindowAdjustment = 0;   // Time of last window change
+    quint32 m_consecutiveGoodAcks = 0;    // Count of ACKs without loss
+    quint32 m_recentLossCount = 0;        // Recent loss events
+    quint64 m_lastLossTime = 0;           // Time of last loss
+
+    // Bandwidth estimation
+    quint64 m_bytesAcked = 0;             // Bytes acknowledged
+    quint64 m_lastBandwidthCalc = 0;      // Last bandwidth calculation time
+    double m_estimatedBandwidth = 0;      // Estimated bandwidth (bytes/ms)
+
+    // Round-trip time tracking
+    QQueue<quint64> m_rttSamples;         // Recent RTT samples
+    quint64 m_minRTT = UINT64_MAX;        // Minimum observed RTT
+
+    // Duplicate ACK detection
+    QHash<quint32, quint32> m_duplicateAckCount;
+    quint32 m_lastAckSeq = 0;
+
+    quint32 getEffectiveWindowSize();
+    void adaptMaxWindow();
+    void updateBandwidthEstimate(quint64 now);
+    void handleLossEvent(quint64 now);
+    void updateRTTAndBandwidth(quint32 seq, quint64 now);
+    void handleSuccessfulAck(quint32 newlyAckedPackets, quint64 now);
 
 private slots:
     /**

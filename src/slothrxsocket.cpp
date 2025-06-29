@@ -151,18 +151,20 @@ void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
 
     if(header.sequenceNumber < m_baseWriteSeqNum) {
         qDebug() << "Already written packet " << header.sequenceNumber;
+        // Still send ACK for old packets to help sender advance
+        if (m_untrackedCount == 0) {
+            m_untrackedCount = 8; // Force ACK send
+        }
         return;
     }
-    m_highestSeqReceived = m_highestSeqReceived < header.sequenceNumber ? header.sequenceNumber : m_highestSeqReceived;
 
+    m_highestSeqReceived = qMax(m_highestSeqReceived, header.sequenceNumber);
     m_recvWindow[header.sequenceNumber] = payload;
     m_receivedSeqNums.insert(header.sequenceNumber);
 
-    // qDebug() << QString("m_recvWindow size: %1, m_baseWriteSeq: %2, m_untrackedCount: %3")
-    //                 .arg(m_recvWindow.size()).arg(m_baseWriteSeqNum).arg(m_untrackedCount);
-
     qDebug() << "SlothRX <=== DATA seq " << header.sequenceNumber << ", untrackedCount: " << m_untrackedCount;
 
+    // Write continuous packets to file
     while(m_recvWindow.contains(m_baseWriteSeqNum)) {
         QByteArray chunk = m_recvWindow[m_baseWriteSeqNum];
         m_file.write(chunk);
@@ -170,30 +172,28 @@ void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
         m_baseWriteSeqNum++;
     }
 
-    // increment baseAckSeqNum as soon as we receive ordered packet
-    // on sender side we'll assume that
+    // Update cumulative ACK base
     while (m_receivedSeqNums.contains(m_baseAckSeqNum)) {
         ++m_baseAckSeqNum;
     }
 
     m_untrackedCount++;
-    // qDebug()
-    if(m_untrackedCount >= 8) {
-        qDebug() << "Sending acknowledgement";
+
+    // IMPROVEMENT 2: More frequent ACKs and immediate ACK for gaps
+    bool hasGap = (header.sequenceNumber > m_baseAckSeqNum);
+
+    if (m_untrackedCount >= 4 || hasGap) { // Reduced from 8 to 4 for faster feedback
+        qDebug() << "Sending acknowledgement (gap detected: " << hasGap << ")";
         sendAcknowledgement();
-        while (m_receivedSeqNums.contains(m_baseAckSeqNum)) {
-            ++m_baseAckSeqNum;
-        }
-
-
         m_untrackedCount = 0;
-        // m_baseAckSeqNum = m_baseWriteSeqNum;
     }
 }
 
 void SlothRxSocket::sendAcknowledgement()
 {
-    QByteArray bitmap = generateAckBitmap(m_baseAckSeqNum, 8);
+    // Use larger bitmap for better feedback (16 bytes = 128 bits)
+    int bitmapSize = 16;
+    QByteArray bitmap = generateAckBitmap(m_baseAckSeqNum, bitmapSize * 8);
 
     AckWindowPacket packet;
     QByteArray payload;
@@ -223,16 +223,13 @@ void SlothRxSocket::sendAcknowledgement()
 
     fullStream.writeRawData(payload.constData(), payload.size());
 
-    PacketHeader header;
-    QByteArray parsedPayload;
-    SlothPacketUtils::parsePacketHeader(fullBuffer, header, parsedPayload);
-
-    qDebug() << "SlothRX ACK  with base " << m_baseAckSeqNum << " ===> ";
+    qDebug() << "SlothRX ACK with base " << m_baseAckSeqNum << " ===> ";
     SlothPacketUtils::logBitMap(bitmap);
+
     m_lastAckTime = QTime::currentTime();
-    // Transmit the full serialized buffer
     transmitBuffer(fullBuffer);
 }
+
 
 bool SlothRxSocket::transmitBuffer(const QByteArray& buffer)
 {
@@ -272,17 +269,25 @@ QByteArray SlothRxSocket::generateAckBitmap(quint32 base, int windowSize)
 void SlothRxSocket::handleNackTimeout()
 {
     QSet<quint32> currentMissing;
-    // quint32 endSeq = qMin(m_baseAckSeqNum + m_windowSize, m_highestSeqReceived + 1);  // safe upper bound\
 
-    for (quint32 i = m_baseAckSeqNum; i <= /*endSeq*//*m_baseAckSeqNum + m_windowSize*/m_highestSeqReceived; ++i) {
+    // Check for gaps in received sequence numbers
+    for (quint32 i = m_baseAckSeqNum; i <= m_highestSeqReceived; ++i) {
         if (!m_receivedSeqNums.contains(i)) {
             currentMissing.insert(i);
         }
     }
-    // qDebug() << "Nack Timeout current missing: " << currentMissing;
-    m_pendingMissing = currentMissing;
-    scheduleNackDebounce();
+
+    // Only send NACK if we have significant gaps and haven't sent one recently
+    if (!currentMissing.isEmpty() && currentMissing.size() <= 20) { // Limit NACK size
+        QTime now = QTime::currentTime();
+        if (m_lastNackTime.msecsTo(now) >= 200) { // Don't spam NACKs
+            m_pendingMissing = currentMissing;
+            scheduleNackDebounce();
+            m_lastNackTime = now;
+        }
+    }
 }
+
 
 
 void SlothRxSocket::scheduleNackDebounce() {
@@ -312,18 +317,25 @@ void SlothRxSocket::performNackDebounce() {
 
 void SlothRxSocket::sendNack(QList<quint32> missing)
 {
-    if (missing.isEmpty()) return;
+    if (missing.isEmpty() || missing.size() > 50) return; // Don't send huge NACKs
+
+    // Sort and limit the missing list
+    qSort(missing);
+    if (missing.size() > 20) {
+        missing = missing.mid(0, 20); // Only NACK first 20 missing packets
+    }
 
     QSet<quint32> missingSet = QSet<quint32>::fromList(missing);
-    quint32 base = *std::min_element(missing.begin(), missing.end());
-    int windowSize = m_windowSize;
-    qDebug() << "Sending NACK for base " << base << missing;
+    quint32 base = missing.first();
+    quint32 range = missing.last() - base + 1;
+    int windowSize = qMin((int)range, 64); // Limit bitmap size
+
+    qDebug() << "Sending NACK for base " << base << ", count:" << missing.size();
     QByteArray bitmap = SlothPacketUtils::generateBitmapFromSet(base, windowSize, missingSet);
 
     NackPacket packet;
     packet.header.type = PacketType::NACK;
     packet.header.sequenceNumber = 1;
-
     packet.baseSeqNum = base;
     packet.bitmapLength = bitmap.size();
     packet.bitmap = bitmap;
@@ -337,7 +349,6 @@ void SlothRxSocket::sendNack(QList<quint32> missing)
 
     packet.header.checksum = qChecksum(payload.constData(), payload.size());
 
-
     QByteArray full;
     QDataStream fullStream(&full, QIODevice::WriteOnly);
     fullStream << static_cast<quint8>(packet.header.type)
@@ -349,7 +360,6 @@ void SlothRxSocket::sendNack(QList<quint32> missing)
                << packet.header.checksum;
     fullStream.writeRawData(payload.constData(), payload.size());
 
-
     m_lastAckTime = QTime::currentTime();
     transmitBuffer(full);
 }
@@ -360,10 +370,9 @@ void SlothRxSocket::handleFeedbackTimeout()
     QTime now = QTime::currentTime();
     int ms = m_lastAckTime.msecsTo(now);
 
-
-    // if no ack sent since past 400 ms then send ack
-    if(ms >= 200) {
-        qDebug() << "feedback timeout";
+    // Send ACK if no feedback sent recently (reduced from 200ms to 100ms)
+    if (ms >= 100) {
+        qDebug() << "Feedback timeout - sending ACK";
         sendAcknowledgement();
     }
 }
@@ -376,8 +385,12 @@ void SlothRxSocket::startFeedbackTimers()
     connect(m_nackTimer, &QTimer::timeout, this, &SlothRxSocket::handleNackTimeout);
     connect(m_feedbackTimer, &QTimer::timeout, this, &SlothRxSocket::handleFeedbackTimeout);
 
-    m_nackTimer->start(500);
-    m_feedbackTimer->start(500);
+    // More frequent timers for better responsiveness
+    m_nackTimer->start(250);     // Reduced from 500ms
+    m_feedbackTimer->start(50);  // Reduced from 500ms for quicker ACK sending
+
+    m_lastAckTime = QTime::currentTime();
+    m_lastNackTime = QTime::currentTime();
 }
 
 
