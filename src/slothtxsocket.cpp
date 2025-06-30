@@ -33,7 +33,7 @@ void SlothTxSocket::initializeProgressTracking()
     m_stats.transferStartTime = QDateTime::currentMSecsSinceEpoch();
 
     // FIX: Start with more reasonable assumptions for low-speed links
-    m_linkCapacityBps = 10000; // Start with 10Kbps instead of 1Mbps
+    m_linkCapacityBps = 640000; // Start with 10Kbps instead of 1Mbps
     m_adaptiveChunkSize = 512;  // Smaller chunks for unreliable links
     m_congestionState = SLOW_START;
     m_congestionWindow = 8;
@@ -61,26 +61,39 @@ void SlothTxSocket::initializeProgressTracking()
 
 void SlothTxSocket::initializeForLowSpeedLink()
 {
-    // Conservative but working settings for 3KB/s, 100ms RTT
-    m_linkCapacityBps = 24000; // 3KB/s = 24Kbps
-    m_adaptiveChunkSize = 512;
+    // FIXED: More realistic initial estimates for bandwidth range
+    m_linkCapacityBps = 100000; // Start with 100Kbps (middle of range)
+    m_adaptiveChunkSize = 1024;  // Larger chunks for better efficiency
+    m_minChunkSize = 512;
+    m_maxChunkSize = 1400;       // Near MTU size for efficiency
+    m_chunkSize = m_adaptiveChunkSize;
 
-    // Start small and let it grow
-    m_congestionWindow = 4; // Start with 4 packets
-    m_cwndFloat = 4.0;
-    m_ssthresh = 8;
-    m_windowSize = 12;
-    m_maxWindow = 64;
+    // FIXED: Larger initial window based on BDP
+    // For 100Kbps, 200ms RTT: BDP = 2.5KB = ~3 packets of 1024 bytes
+    // Use 4x BDP for optimal performance = 12 packets
+    m_congestionWindow = 16;     // Start larger
+    m_cwndFloat = 16.0;
+    m_ssthresh = 32;
+    m_minWindow = 8;             // Higher minimum
+    m_maxWindow = 128;           // Much higher maximum
+    m_windowSize = 32;
 
-    m_estimatedRTT = 100;
-    m_RTO = 300;
+    // FIXED: Reasonable RTT assumptions
+    m_estimatedRTT = 200;        // 200ms for low-speed links
+    m_RTO = 600;                 // 3x RTT
+    m_minRTT = 50;
 
-    // Disable pacing initially
-    m_pacingInterval = 0;
-    m_targetUtilization = 80;
+    // FIXED: Enable proper pacing
+    m_pacingInterval = 50;       // Start with 50ms between packets
+    m_targetUtilization = 85;    // Target 85% utilization
 
-    qDebug() << "Initialized for low-speed link: CWnd =" << m_congestionWindow;
+    qDebug() << "Initialized for 10Kbps-1Mbps range: CWnd =" << m_congestionWindow
+             << "ChunkSize =" << m_adaptiveChunkSize
+             << "Pacing =" << m_pacingInterval << "ms";
 }
+
+
+
 
 
 
@@ -88,42 +101,46 @@ void SlothTxSocket::adaptChunkSize()
 {
     if (m_linkCapacityBps == 0) return;
 
-    // CRITICAL FIX: Much more conservative chunk sizing
+    // FIXED: Adaptive chunk sizing based on bandwidth and loss
     quint32 optimalSize;
 
-    // Base chunk size on actual measured bandwidth, not estimated
-    if (m_linkCapacityBps < 10000) {
-        optimalSize = 256;
-    } else if (m_linkCapacityBps < 30000) {
+    if (m_linkCapacityBps < 50000) {        // < 50Kbps
         optimalSize = 512;
-    } else {
-        optimalSize = 1024; // Safe max chunk size
+    } else if (m_linkCapacityBps < 200000) { // 50-200Kbps
+        optimalSize = 1024;
+    } else {                                 // > 200Kbps
+        optimalSize = 1400;
     }
 
-    // CRITICAL: Account for loss rate - smaller chunks for lossy links
-    if (m_lossRate > 0.02) { // > 2% loss
+    // Reduce size if experiencing loss
+    if (m_lossRate > 0.02) {      // > 2% loss
         optimalSize = qMax(optimalSize / 2, m_minChunkSize);
+    } else if (m_lossRate > 0.05) { // > 5% loss
+        optimalSize = m_minChunkSize;
     }
 
-    // CRITICAL: Account for high RTT - don't increase chunk size
-    if (m_estimatedRTT > 1000) { // High latency > 1 second
-        optimalSize = qMin(optimalSize, (quint32)512); // Cap at 512 bytes
+    // Gradual adaptation to prevent oscillation
+    static quint64 lastAdaptTime = 0;
+    quint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (now - lastAdaptTime < 10000) return; // Wait 10 seconds
+    lastAdaptTime = now;
+
+    if (optimalSize != m_adaptiveChunkSize) {
+        // Gradual change - max 256 bytes per adaptation
+        if (abs((int)optimalSize - (int)m_adaptiveChunkSize) > 256) {
+            optimalSize = m_adaptiveChunkSize +
+                          ((optimalSize > m_adaptiveChunkSize) ? 256 : -256);
+        }
+
+        m_adaptiveChunkSize = qBound(m_minChunkSize, optimalSize, m_maxChunkSize);
+        m_chunkSize = m_adaptiveChunkSize;
+
+        qDebug() << "Chunk size adapted to" << m_adaptiveChunkSize
+                 << "for bandwidth" << (m_linkCapacityBps / 1000.0) << "Kbps";
     }
-
-    // Gradual adaptation - prevent sudden jumps
-    quint32 currentSize = m_adaptiveChunkSize;
-    if (optimalSize > currentSize) {
-        optimalSize = qMin(optimalSize, currentSize + 128); // Increase by max 128 bytes
-    } else if (optimalSize < currentSize) {
-        optimalSize = qMax(optimalSize, currentSize - 128); // Decrease by max 128 bytes
-    }
-
-    m_adaptiveChunkSize = qBound(m_minChunkSize, optimalSize, m_maxChunkSize);
-    m_chunkSize = m_adaptiveChunkSize;
-
-    qDebug() << "Chunk size adapted from" << currentSize << "to" << m_adaptiveChunkSize
-             << "for bandwidth" << (m_linkCapacityBps/1000.0) << "Kbps";
 }
+
+
 
 void SlothTxSocket::updateBandwidthEstimation()
 {
@@ -136,15 +153,14 @@ void SlothTxSocket::updateBandwidthEstimation()
     }
 
     quint64 elapsed = now - m_goodputTimer;
-    if (elapsed < 2000) return; // Wait 2 seconds for stable measurement
+    if (elapsed < 3000) return; // Wait 3 seconds for stable measurement
 
     // Calculate actual goodput (successfully delivered bytes)
-    double currentGoodput = (double)m_goodputBytes * 8000 / elapsed; // Convert to bps
+    double currentGoodput = (double)m_goodputBytes * 8000 / elapsed;
 
-    // Only update if we have meaningful data
-    if (currentGoodput > 0 && m_goodputBytes > 0) {
+    if (currentGoodput > 5000 && m_goodputBytes > 0) { // Only if > 5Kbps measured
         m_throughputSamples.enqueue(currentGoodput);
-        if (m_throughputSamples.size() > 5) { // Shorter history for faster adaptation
+        if (m_throughputSamples.size() > 10) {
             m_throughputSamples.dequeue();
         }
 
@@ -154,20 +170,17 @@ void SlothTxSocket::updateBandwidthEstimation()
         }
         avgThroughput /= m_throughputSamples.size();
 
-        // CRITICAL FIX: Very conservative capacity estimation
-        if (avgThroughput > 1000) { // Only update if > 1Kbps measured
-            // Use measured goodput as capacity estimate with small buffer
-            double newEstimate = avgThroughput * 1.1; // Only 10% headroom
+        // FIXED: More aggressive capacity estimation with proper bounds
+        if (avgThroughput > 8000) { // Only update if > 8Kbps measured
+            // Use measured goodput with reasonable headroom
+            double newEstimate = avgThroughput * 1.3; // 30% headroom for burstiness
 
-            // Prevent sudden increases - gradual adaptation only
-            if (newEstimate > m_linkCapacityBps * 1.5) {
-                newEstimate = m_linkCapacityBps * 1.2; // Max 20% increase
-            }
+            // Allow faster adaptation upward, slower downward
+            double alpha = (newEstimate > m_linkCapacityBps) ? 0.3 : 0.1;
+            m_linkCapacityBps = (1.0 - alpha) * m_linkCapacityBps + alpha * newEstimate;
 
-            // Smooth transition with more weight on current measurement
-            m_linkCapacityBps = 0.3 * m_linkCapacityBps + 0.7 * newEstimate;
-            m_linkCapacityBps = qMax(m_linkCapacityBps, 5000ULL); // Minimum 5Kbps
-            m_linkCapacityBps = qMin(m_linkCapacityBps, 200000ULL); // Maximum 200Kbps for safety
+            // FIXED: Proper bounds for target range
+            m_linkCapacityBps = qBound(8000ULL, m_linkCapacityBps, 1200000ULL);
         }
     }
 
@@ -176,7 +189,36 @@ void SlothTxSocket::updateBandwidthEstimation()
 
     adaptChunkSize();
     updatePacingInterval();
+    updateWindowSize();
 }
+
+
+
+void SlothTxSocket::updateWindowSize()
+{
+    // FIXED: Calculate optimal window size based on BDP
+    if (m_linkCapacityBps > 0 && m_estimatedRTT > 0) {
+        // Bandwidth-Delay Product in bytes
+        quint64 bdpBytes = (m_linkCapacityBps * m_estimatedRTT) / (8 * 1000);
+
+        // Convert to packets
+        quint32 bdpPackets = qMax((quint32)(bdpBytes / m_adaptiveChunkSize), 1U);
+
+        // Use 2-4x BDP based on link quality
+        quint32 multiplier = (m_lossRate < 0.01) ? 4 : 2;
+        quint32 targetWindow = bdpPackets * multiplier;
+
+        // Gradual window adjustment
+        if (targetWindow > m_congestionWindow && m_lossRate < 0.01) {
+            m_congestionWindow = qMin(targetWindow, m_maxWindow);
+        }
+
+        qDebug() << "BDP Window: BDP=" << bdpPackets
+                 << "Target=" << targetWindow
+                 << "Current=" << m_congestionWindow;
+    }
+}
+
 void SlothTxSocket::handleBandwidthTransition()
 {
     // Detect sudden bandwidth changes
@@ -209,24 +251,32 @@ void SlothTxSocket::handleBandwidthTransition()
 
 void SlothTxSocket::updatePacingInterval()
 {
-    if (m_linkCapacityBps == 0 || m_congestionWindow == 0) {
-        m_pacingInterval = 100; // 100ms minimum interval for very slow links
+    if (m_linkCapacityBps == 0 || m_adaptiveChunkSize == 0) {
+        m_pacingInterval = 100;
         return;
     }
 
-    // CRITICAL FIX: Very conservative pacing for low bandwidth
-    quint64 targetBps = (m_linkCapacityBps * 80) / 100; // Use only 60% of measured capacity
-    quint64 bytesPerPacket = m_adaptiveChunkSize + 60; // Account for all headers
+    // FIXED: Proper pacing calculation
+    double bitsPerPacket = (m_adaptiveChunkSize + 60) * 8; // Include overhead
+    double effectiveBps = m_linkCapacityBps * (m_targetUtilization / 100.0);
 
     // Calculate time between packets in milliseconds
-    m_pacingInterval = (bytesPerPacket * 8000) / targetBps;
+    double intervalMs = (bitsPerPacket * 1000.0) / effectiveBps;
 
-    // CRITICAL FIX: Much longer intervals for stability
-    m_pacingInterval = qBound((quint64)50, m_pacingInterval, (quint64)500); // 50ms to 500ms
+    // FIXED: Reasonable pacing bounds
+    m_pacingInterval = qBound(5ULL, (quint64)intervalMs, 500ULL);
 
-    qDebug() << "Pacing interval updated to" << m_pacingInterval << "ms for"
-             << (targetBps/1000.0) << "Kbps target, chunk size" << m_adaptiveChunkSize;
+    // Adaptive pacing based on congestion window
+    if (m_congestionWindow > 16) {
+        // Faster pacing for larger windows
+        m_pacingInterval = qMax((quint64)(m_pacingInterval * 0.7), 5ULL);
+    }
+
+    qDebug() << "Pacing updated:" << m_pacingInterval << "ms"
+             << "(capacity:" << (m_linkCapacityBps / 1000.0) << "Kbps)";
 }
+
+
 
 void SlothTxSocket::handleChecksumFailures()
 {
@@ -309,7 +359,7 @@ void SlothTxSocket::printTransmissionProgress()
                    .arg(m_stats.totalRetransmissions)
                    .arg(m_stats.totalTimeouts);
     qInfo() << QString("Link Capacity: %1 Kbps, Chunk Size: %2 bytes")
-                   .arg(m_linkCapacityBps / 1000.0, 0, 'f', 1)
+                   .arg(m_linkCapacityBps / 1000.0)
                    .arg(m_adaptiveChunkSize);
     qInfo() << QString("Congestion State: %1, Loss Rate: %2%")
                    .arg(m_congestionState)
@@ -331,6 +381,12 @@ void SlothTxSocket::printTransmissionProgress()
     qInfo() << QString("Link utilization: %1% of %2 KB/s theoretical max")
                    .arg(utilizationPercent, 0, 'f', 1)
                    .arg(theoreticalMaxKBps, 0, 'f', 1);
+
+    qInfo() << QString("Dynamic scaling: CWND=%1, Chunk=%2, Pacing=%3ms, LinkCap=%.1f Kbps")
+                   .arg(m_congestionWindow)
+                   .arg(m_adaptiveChunkSize)
+                   .arg(m_pacingInterval)
+                   .arg(m_linkCapacityBps / 1000.0, 0, 'f', 1);
 
     qInfo() << "==================";
 }
@@ -563,69 +619,34 @@ void SlothTxSocket::sendNextWindow()
     qDebug() << "sendNextWindow: base=" << m_baseSeqNum << "next=" << m_nextSeqNum
              << "send_window=" << m_sendWindow.size() << "missing=" << m_missingWindow.size();
 
-    // CRITICAL FIX: Detect repeated deadlock (checksum failure pattern)
-    static int consecutiveDeadlocks = 0;
-    bool isDeadlocked = (m_sendWindow.size() > 0 && m_sendWindow.size() == m_missingWindow.size());
+    // FIXED: Prevent deadlock with more intelligent recovery
+    static int deadlockCount = 0;
+    bool isDeadlocked = (m_sendWindow.size() > 0 &&
+                         m_sendWindow.size() == m_missingWindow.size() &&
+                         m_sendWindow.size() >= 3);
 
     if (isDeadlocked) {
-        consecutiveDeadlocks++;
-        qWarning() << "Deadlock" << consecutiveDeadlocks << "detected! Window size:"
-                   << m_sendWindow.size();
-
-        // If we keep getting deadlocked on same packet, it's likely fragmentation
-        if (consecutiveDeadlocks > 3) {
-            qWarning() << "Repeated deadlock - likely fragmentation. Reducing chunk size.";
-
-            // Aggressively reduce chunk size to prevent fragmentation
-            m_adaptiveChunkSize = qMax(m_adaptiveChunkSize / 2, (quint32)256);
-            m_chunkSize = m_adaptiveChunkSize;
-            m_maxChunkSize = m_adaptiveChunkSize; // Prevent it from growing again
-
-            // Clear the problematic packet and restart
-            QList<quint32> deadlockedPackets = m_missingWindow.values();
-            for (quint32 seq : deadlockedPackets) {
-                qWarning() << "Deadlocked packet" << seq << " — forcing retransmit";
-
-                // Don't remove from sendWindow — allow retransmission
-                m_lastRextTime.remove(seq); // Force immediate retry
-                m_lossDetectionCount.remove(seq); // Reset detection count
-
-                // Mark as missing again
-                m_missingWindow.insert(seq);
-            }
-
-            consecutiveDeadlocks = 0;
-
-            qWarning() << "Reduced chunk size to" << m_adaptiveChunkSize
-                       << "and cleared deadlocked packets";
+        deadlockCount++;
+        if (deadlockCount > 5) {
+            qWarning() << "Persistent deadlock detected - implementing recovery";
+            handleDeadlockRecovery();
+            deadlockCount = 0;
+            return;
         }
-
-        // Send only one packet with longer delay during deadlock
-        QThread::msleep(50); // 200ms delay between retransmissions
     } else {
-        consecutiveDeadlocks = 0;
+        deadlockCount = 0;
     }
 
-
-    quint32 maxBurstSize = qMin((quint32)8, m_congestionWindow / 2);
-
-
+    // FIXED: More aggressive burst sending
+    quint32 maxBurstSize = qMin(m_congestionWindow, (quint32)20);
     if (isDeadlocked) {
-        qWarning() << "Deadlock detected! Implementing aggressive recovery";
-        maxBurstSize = 1; // Send only one packet at a time during deadlock
-
-        // FIX: Clear corrupted state and force recreation
-        QList<quint32> deadlockedPackets = m_missingWindow.values();
-        for (quint32 seq : deadlockedPackets) {
-            m_lastRextTime.remove(seq); // Force immediate retransmission
-            m_lossDetectionCount.remove(seq);
-        }
+        maxBurstSize = 2; // Conservative during deadlock
     }
 
     quint32 effectiveWindow = getEffectiveWindowSize();
     int packetsToSend = 0;
 
-    // CRITICAL FIX: Recreate packets instead of reusing buffers
+    // Handle retransmissions first
     QList<quint32> missingList = m_missingWindow.values();
     std::sort(missingList.begin(), missingList.end());
 
@@ -634,10 +655,9 @@ void SlothTxSocket::sendNextWindow()
 
         quint64 now = m_rttTimer->elapsed();
         quint64 lastRext = m_lastRextTime.value(seq, 0);
-        quint64 rextInterval = qMax((quint64)300, (quint64)(m_estimatedRTT * 2));
+        quint64 rextInterval = qMax((quint64)m_RTO, (quint64)200);
 
         if (lastRext == 0 || (now - lastRext) >= rextInterval) {
-            // FIX: Recreate the packet instead of reusing buffer
             if (recreateAndRetransmitPacket(seq)) {
                 m_stats.totalPacketsSent++;
                 m_stats.totalRetransmissions++;
@@ -645,23 +665,17 @@ void SlothTxSocket::sendNextWindow()
                 m_sentTimestamp[seq] = now;
                 packetsToSend++;
 
-                if (isDeadlocked) {
-                    QThread::msleep(50); // Longer delay during deadlock recovery
-                } else if (packetsToSend < (int)maxBurstSize) {
-                    QThread::msleep(5);
+                // FIXED: Use pacing for retransmissions too
+                if (packetsToSend < (int)maxBurstSize && !isDeadlocked) {
+                    if (m_pacingInterval > 0) {
+                        QThread::msleep(m_pacingInterval / 2); // Faster retransmit pacing
+                    }
                 }
-            } else {
-                qWarning() << "Failed to recreate packet" << seq << "- removing from windows";
-                // If we can't recreate the packet, remove it from tracking
-                m_sendWindow.remove(seq);
-                m_missingWindow.remove(seq);
-                m_sentTimestamp.remove(seq);
-                m_lastRextTime.remove(seq);
             }
         }
     }
 
-    // Continue with new packets...
+    // Send new packets
     int newPacketsSent = 0;
     while (m_nextSeqNum < m_baseSeqNum + effectiveWindow &&
            (packetsToSend + newPacketsSent) < (int)maxBurstSize &&
@@ -672,13 +686,16 @@ void SlothTxSocket::sendNextWindow()
 
         DataPacket packet;
         packet.header = PacketHeader(PacketType::DATA, m_nextSeqNum, chunk.size());
-        // FIX: Ensure proper checksum calculation
         packet.header.checksum = qChecksum(chunk.constData(), chunk.size());
         packet.chunk = chunk;
 
         QByteArray buffer = SlothPacketUtils::serializePacket(packet);
 
-        qDebug() << "Sending new packet" << m_nextSeqNum << "checksum:" << packet.header.checksum;
+        // FIXED: Direct transmission with proper pacing
+        if (m_pacingInterval > 0 && newPacketsSent > 0) {
+            QThread::msleep(m_pacingInterval);
+        }
+
         transmitBuffer(buffer);
         m_stats.totalPacketsSent++;
 
@@ -689,13 +706,10 @@ void SlothTxSocket::sendNextWindow()
         ++m_nextSeqNum;
         ++newPacketsSent;
         m_stats.uniqueBytesSent += chunk.size();
-
-        if (newPacketsSent < (int)maxBurstSize - packetsToSend && !m_file.atEnd()) {
-            QThread::msleep(5);
-        }
     }
 
-    qDebug() << "Sent" << packetsToSend << "retransmissions and" << newPacketsSent << "new packets";
+    qDebug() << "Sent" << packetsToSend << "retransmissions and"
+             << newPacketsSent << "new packets (pacing:" << m_pacingInterval << "ms)";
 
     if (m_file.atEnd() && m_sendWindow.empty()) {
         sendEOFPacket();
@@ -705,6 +719,7 @@ void SlothTxSocket::sendNextWindow()
         }
     }
 }
+
 
 
 bool SlothTxSocket::recreateAndRetransmitPacket(quint32 seq)
@@ -775,90 +790,103 @@ bool SlothTxSocket::recreateAndRetransmitPacket(quint32 seq)
 
 void SlothTxSocket::sendPacedPacket()
 {
-    if (m_pacingQueue.isEmpty()) return;
+    int packetsSent = 0;
+    int maxBurst = m_congestionWindow;
 
-    QByteArray buffer = m_pacingQueue.dequeue();
-    transmitBuffer(buffer);
-    m_stats.totalPacketsSent++;
+    while (!m_pacingQueue.isEmpty() &&
+           m_sendWindow.size() < m_congestionWindow &&
+           packetsSent < maxBurst)
+    {
+        QByteArray buffer = m_pacingQueue.dequeue();
+        transmitBuffer(buffer);
+        m_stats.totalPacketsSent++;
+        packetsSent++;
+    }
 
-    // Schedule next packet
+    // If more to send, continue pacing
     if (!m_pacingQueue.isEmpty()) {
         m_pacingTimer->start(m_pacingInterval);
     }
 }
 
 
+
 void SlothTxSocket::handleRetransmissions()
 {
-    quint64 now = m_rttTimer->elapsed();
+    const quint64 now = m_rttTimer->elapsed();
+
+    // FIXED: More reasonable timeout calculation
+    const quint64 baseTimeout = qMax((quint64)(m_RTO), (quint64)500);
+
     QList<quint32> timedOutPackets;
 
     for (auto it = m_sentTimestamp.begin(); it != m_sentTimestamp.end(); ++it) {
-        quint32 seq = it.key();
-        quint64 sentTime = it.value();
+        const quint32 seq = it.key();
+        const quint64 sentTime = it.value();
 
-        quint64 timeout = qMax((quint64)(m_estimatedRTT * 3), (quint64)1000); // Longer timeout
-
-        if (now - sentTime >= timeout) {
+        if (now - sentTime >= baseTimeout) {
             timedOutPackets.append(seq);
         }
     }
 
-    if (!timedOutPackets.isEmpty()) {
-        qDebug() << "Timeout detected for" << timedOutPackets.size() << "packets";
+    if (timedOutPackets.isEmpty()) return;
 
-        for (quint32 seq : timedOutPackets) {
-            // Check retransmission count to prevent infinite loops
-            int retryCount = m_retransmitCount.value(seq, 0);
-            if (retryCount >= 10) {
-                qWarning() << "Packet" << seq << "exceeded retry limit, dropping";
-                m_sendWindow.remove(seq);
-                m_missingWindow.remove(seq);
-                m_sentTimestamp.remove(seq);
-                m_lastRextTime.remove(seq);
-                m_retransmitCount.remove(seq);
-                continue;
-            }
+    qDebug() << "[Timeout] Detected" << timedOutPackets.size() << "packets"
+             << "RTO:" << baseTimeout << "ms";
 
-            m_retransmitCount[seq] = retryCount + 1;
+    for (quint32 seq : timedOutPackets) {
+        int retryCount = m_retransmitCount.value(seq, 0);
 
+        // FIXED: Higher retry limit for low-speed links
+        if (retryCount >= 15) {
+            qWarning() << "Dropping packet" << seq << "after" << retryCount << "retries";
+            m_sendWindow.remove(seq);
+            m_missingWindow.remove(seq);
+            m_sentTimestamp.remove(seq);
+            m_lastRextTime.remove(seq);
+            m_retransmitCount.remove(seq);
+            continue;
+        }
+
+        m_retransmitCount[seq] = retryCount + 1;
+
+        // FIXED: Only mark as lost after multiple timeouts
+        if (retryCount >= 3) {
             if (!m_actuallyLostPackets.contains(seq)) {
-                markPacketAsLost(seq, "Timeout");
+                markPacketAsLost(seq, "Multiple timeouts");
             }
             m_missingWindow.insert(seq);
-            m_stats.totalTimeouts++;
         }
 
-        // If we have too many consecutive timeouts, implement recovery
-        if (m_stats.totalTimeouts > 50) {
-            qWarning() << "Excessive timeouts detected, implementing recovery";
-            handleDeadlockRecovery();
-        }
+        m_stats.totalTimeouts++;
+    }
 
-        sendNextWindow();
+    // FIXED: Less aggressive congestion response to timeouts
+    if (timedOutPackets.size() > 5) {
+        handleLossEvent(now);
     }
 }
 
 
+
 quint32 SlothTxSocket::getEffectiveWindowSize()
 {
-    // CRITICAL FIX: Use larger effective window
+    // FIXED: More generous effective window
     quint32 effectiveWindow = qMin(m_congestionWindow, m_maxWindow);
-    effectiveWindow = qMax(effectiveWindow, (quint32)15); // Minimum 15 packets
+    effectiveWindow = qMax(effectiveWindow, (quint32)8); // Minimum 8 packets
 
-    // Consider bandwidth-delay product for optimal window sizing
-    if (m_estimatedBandwidth > 0 && m_estimatedRTT > 0) {
+    // Consider bandwidth-delay product
+    if (m_linkCapacityBps > 0 && m_estimatedRTT > 0) {
         quint64 bdpBytes = (m_linkCapacityBps * m_estimatedRTT) / (8 * 1000);
         quint32 bdpPackets = (bdpBytes / m_chunkSize) + 1;
 
-        // CRITICAL FIX: Use 4x BDP instead of 2x for better buffering
-        quint32 targetWindow = bdpPackets * 4;
+        // Use 3x BDP for good performance
+        quint32 targetWindow = bdpPackets * 3;
         effectiveWindow = qMax(effectiveWindow, targetWindow);
     }
 
-    // CRITICAL FIX: Higher maximum window
-    // effectiveWindow = qMin(effectiveWindow, (quint32)40);
-    effectiveWindow = qMin(effectiveWindow, (quint32)64);
+    // FIXED: Reasonable maximum window
+    effectiveWindow = qMin(effectiveWindow, (quint32)128);
 
     return effectiveWindow;
 }
@@ -991,27 +1019,27 @@ void SlothTxSocket::handleLossEvent(quint64 now)
 {
     updateLossRate();
 
-    // FIX: Don't be too aggressive on loss
+    // FIXED: Less aggressive loss response for low-speed links
     switch (m_congestionState) {
     case SLOW_START:
     case CONGESTION_AVOIDANCE:
-        // Moderate reduction instead of halving
-        m_ssthresh = qMax((quint32)(m_cwndFloat * 0.7), m_minWindow);
+        // Moderate reduction (80% instead of 50%)
+        m_ssthresh = qMax((quint32)(m_cwndFloat * 0.8), m_minWindow);
         m_fastRecoveryTarget = m_nextSeqNum;
         m_congestionState = FAST_RECOVERY;
-        m_cwndFloat = m_ssthresh + 2; // Less aggressive inflation
+        m_cwndFloat = m_ssthresh + 3;
         break;
 
     case BANDWIDTH_PROBING:
         m_congestionState = CONGESTION_AVOIDANCE;
-        m_ssthresh = qMax((quint32)(m_cwndFloat * 0.8), m_minWindow);
+        m_ssthresh = qMax((quint32)(m_cwndFloat * 0.85), m_minWindow);
         m_cwndFloat = m_ssthresh;
         break;
 
     case FAST_RECOVERY:
-        // Only reduce if multiple consecutive losses
-        if (now - m_lastLossTime < m_estimatedRTT * 2) {
-            m_ssthresh = qMax(m_ssthresh / 2, m_minWindow);
+        // Only reduce if repeated losses
+        if (now - m_lastLossTime < m_estimatedRTT) {
+            m_ssthresh = qMax(m_ssthresh * 4 / 5, m_minWindow);
             m_cwndFloat = m_ssthresh;
         }
         break;
@@ -1020,9 +1048,8 @@ void SlothTxSocket::handleLossEvent(quint64 now)
     m_lastLossTime = now;
     m_congestionWindow = qMax((quint32)m_cwndFloat, m_minWindow);
 
-    // FIX: Don't increase RTO too aggressively
-    m_RTO = qMin((quint64)(m_RTO * 1.5), (quint64)5000);
-
+    // FIXED: Moderate RTO increase
+    m_RTO = qMin((quint64)(m_RTO * 1.25), (quint64)3000);
 }
 
 void SlothTxSocket::updateLossRate()
@@ -1056,6 +1083,8 @@ void SlothTxSocket::updateRTTAndBandwidth(quint32 seq, quint64 now)
     if (m_sentTimestamp.contains(seq)) {
         quint64 sentTime = m_sentTimestamp.value(seq);
         quint64 rtt = now - sentTime;
+
+        if (rtt > 2000) return; // it may be noise
 
         // Update RTT statistics
         m_rttSamples.enqueue(rtt);
@@ -1093,10 +1122,11 @@ void SlothTxSocket::handleSuccessfulAck(quint32 newlyAckedPackets, quint64 now)
     m_consecutiveGoodAcks += newlyAckedPackets;
     m_goodputBytes += newlyAckedPackets * m_adaptiveChunkSize;
 
+    // FIXED: More aggressive window growth for low-speed links
     switch (m_congestionState) {
     case SLOW_START:
-        // Exponential increase
-        m_cwndFloat += newlyAckedPackets;
+        // Faster exponential increase
+        m_cwndFloat += newlyAckedPackets * 1.5;
         if (m_cwndFloat >= m_ssthresh) {
             m_congestionState = CONGESTION_AVOIDANCE;
             qDebug() << "Entering congestion avoidance, cwnd:" << m_cwndFloat;
@@ -1104,23 +1134,22 @@ void SlothTxSocket::handleSuccessfulAck(quint32 newlyAckedPackets, quint64 now)
         break;
 
     case CONGESTION_AVOIDANCE:
-        // Linear increase: 1 packet per RTT
-        m_cwndFloat += (double)newlyAckedPackets / m_cwndFloat;
+        // Faster linear increase
+        m_cwndFloat += (double)newlyAckedPackets * 2.0 / m_cwndFloat;
 
-        // Probe for more bandwidth occasionally
-        if (m_consecutiveGoodAcks > m_cwndFloat * 4 && m_lossRate < 0.01) {
+        // Probe for bandwidth more aggressively
+        if (m_consecutiveGoodAcks > m_cwndFloat * 2 && m_lossRate < 0.005) {
             m_congestionState = BANDWIDTH_PROBING;
             qDebug() << "Starting bandwidth probing";
         }
         break;
 
     case BANDWIDTH_PROBING:
-        // Aggressive increase to find capacity
-        m_cwndFloat += newlyAckedPackets * 1.5;
+        // Very aggressive increase
+        m_cwndFloat += newlyAckedPackets * 2.0;
         break;
 
     case FAST_RECOVERY:
-        // Inflate window for each additional ACK
         m_cwndFloat += newlyAckedPackets;
         if (m_baseSeqNum >= m_fastRecoveryTarget) {
             m_congestionState = CONGESTION_AVOIDANCE;
@@ -1130,27 +1159,20 @@ void SlothTxSocket::handleSuccessfulAck(quint32 newlyAckedPackets, quint64 now)
         break;
     }
 
-    m_congestionWindow = (quint32)m_cwndFloat;
-
-    // Adaptive maximum window based on BDP
-    quint32 bdpWindow = calculateBDPWindow();
-    m_congestionWindow = qMin(m_congestionWindow, bdpWindow);
-    m_congestionWindow = qMax(m_congestionWindow, m_minWindow);
+    m_congestionWindow = qBound(m_minWindow, (quint32)m_cwndFloat, m_maxWindow);
 }
 
 quint32 SlothTxSocket::calculateBDPWindow()
 {
-    if (m_linkCapacityBps == 0 || m_estimatedRTT == 0) {
+    if (m_linkCapacityBps == 0 || m_estimatedRTT == 0)
         return m_maxWindow;
-    }
 
-    // BDP = (Bandwidth * RTT) / packet_size
-    quint64 bdpBytes = (m_linkCapacityBps * m_estimatedRTT) / (8 * 1000); // Convert to bytes
-    quint32 bdpPackets = (bdpBytes / m_adaptiveChunkSize) + 1;
+    quint64 bdpBytes = (m_linkCapacityBps * m_estimatedRTT) / (8 * 1000);
+    quint32 bdpPackets = bdpBytes / m_adaptiveChunkSize;
 
-    // Use 2x BDP for buffer, but cap at reasonable maximum
-    return qMin(bdpPackets * 2, (quint32)256);
+    return qBound(4U, bdpPackets * 2, 256U); // Use 2x BDP
 }
+
 
 
 

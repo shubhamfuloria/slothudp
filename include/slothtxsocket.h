@@ -10,6 +10,10 @@
 
 #include <include/types.h>
 
+constexpr quint64 LINK_CAPACITY_MIN = 5000;
+constexpr quint64 LINK_CAPACITY_MAX = 1000000; // 1 Mbps
+
+
 class SlothTxSocket : public QUdpSocket
 {
     Q_OBJECT
@@ -72,6 +76,7 @@ private:
     void sendWindow();
     void sendPacket(DataPacket& packet);
     void sendEOFPacket();
+    void updateWindowSize();
 
 
     QByteArray readChunkFromFile();
