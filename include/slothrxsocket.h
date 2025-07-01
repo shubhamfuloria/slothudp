@@ -121,7 +121,9 @@ private slots:
 
 signals:
     void on_fileTxRequest(QString fileName, quint64 fileSize, QString hostAddress);
+    void on_byeTimerFinished();
     void transferCompleted(bool, QString, quint64, quint64);
+
 
 };
 

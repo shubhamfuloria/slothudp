@@ -7,6 +7,7 @@
 #include <QTimer>
 #include <QElapsedTimer>
 #include <QQueue>
+#include <QTime>
 
 #include <include/types.h>
 
@@ -164,6 +165,8 @@ private:
     // Duplicate ACK detection
     QHash<quint32, quint32> m_duplicateAckCount;
     quint32 m_lastAckSeq = 0;
+
+    QTime m_progressStartTime;
 
     quint32 getEffectiveWindowSize();
     void adaptMaxWindow();

@@ -630,12 +630,13 @@ void SlothRxSocket::sendByeConfirmation()
 
     // Send BYE multiple times to ensure delivery (since UDP is unreliable)
     m_byeConfirmTimer = new QTimer(this);
+    connect(this, &SlothRxSocket::on_byeTimerFinished, m_byeConfirmTimer, &QTimer::deleteLater);
     int byeCount = 0;
 
     connect(m_byeConfirmTimer, &QTimer::timeout, this, [=]() mutable {
         if (++byeCount >= 3) {
             m_byeConfirmTimer->stop();
-            m_byeConfirmTimer->deleteLater();
+            emit on_byeTimerFinished();
             return;
         }
         transmitBuffer(buffer);

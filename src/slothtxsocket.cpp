@@ -262,7 +262,7 @@ void SlothTxSocket::handleHandshakeAck(quint32 requestId)
         m_handshakeRetryTimer->deleteLater();
         m_handshakeRetryTimer = nullptr;
     }
-
+    m_progressStartTime = QTime::currentTime();
     initiateFileTransfer();
 }
 
@@ -342,7 +342,7 @@ void SlothTxSocket::sendNextWindow()
             if (m_lastRextTime.contains(seq)) {
                 quint64 lastSent = m_lastRextTime[seq];
                 // Use adaptive spacing based on RTT
-                quint64 minSpacing = qMax(m_RTO / 8, (quint64)50);
+                quint64 minSpacing = qMax(m_RTO / 2, (quint64)100);
                 if (now - lastSent < minSpacing) {
                     continue;
                 }
@@ -731,8 +731,9 @@ void SlothTxSocket::sendEOFPacket()
 
     connect(m_finRetryTimer, &QTimer::timeout, this, [=]() {
         if (++m_finRetryCount >= m_finRetryLimit) {
-            qWarning() << "FIN retry limit reached. Assuming transfer completed.";
+            // qWarning() << "FIN retry limit reached. Assuming transfer completed.";
             performTransferCleanup();
+            m_finRetryTimer->stop();
             return;
         }
 
@@ -812,6 +813,27 @@ void SlothTxSocket::performTransferCleanup()
 
 void SlothTxSocket::handleBye()
 {
-    qInfo() << "Received BYE confirmation from receiver";
+    QTime now = QTime::currentTime();
+    int elapsedMs = m_progressStartTime.msecsTo(now);
+    double elapsedSec = elapsedMs / 1000.0;
+
+    double avgBytesPerSec = (elapsedSec > 0) ? m_stats.uniqueBytesSent / elapsedSec : 0;
+    double avgMbps = (avgBytesPerSec * 8) / (1024 * 1024);
+
+    double efficiency = (m_stats.totalBytesSent > 0) ?
+                            (double(m_stats.uniqueBytesSent) / m_stats.totalBytesSent) * 100.0 : 0.0;
+
+    qInfo() << "=== TX FINAL STATS ===";
+    qInfo() << QString("Total Time: %1 seconds").arg(elapsedSec, 0, 'f', 2);
+    qInfo() << QString("Average Speed: %1 Mbps (%2 KB/s)")
+                   .arg(avgMbps, 0, 'f', 2)
+                   .arg(avgBytesPerSec / 1024, 0, 'f', 1);
+    qInfo() << QString("Final Efficiency: %1%").arg(efficiency, 0, 'f', 1);
+    qInfo() << QString("Total Packets Sent: %1, Total Packets Lost: %2, Total Retransmission: %3")
+                   .arg(m_stats.totalPacketsSent)
+                   .arg(m_stats.totalPacketsLost)
+                   .arg(m_stats.totalRetransmissions);
+    qInfo() << "=====================";
+
     performTransferCleanup();
 }
