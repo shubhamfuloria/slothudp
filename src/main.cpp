@@ -13,8 +13,8 @@ int main(int argc, char *argv[])
     qInfo() << "Hello I'm Sloth UDP, a reliable file transfer protocol";
 
     // Initialize sockets
-    SlothRxSocket* rx = new SlothRxSocket(); // lives on heap
-    QThread* rxThread = new QThread();       // also on heap
+    SlothRxSocket* rx = new SlothRxSocket();
+    QThread* rxThread = new QThread();
     rx->moveToThread(rxThread);
     QObject::connect(rxThread, &QThread::finished, rx, &QObject::deleteLater);
     QObject::connect(rxThread, &QThread::finished, rxThread, &QObject::deleteLater);

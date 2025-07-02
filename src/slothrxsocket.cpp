@@ -224,7 +224,7 @@ void SlothRxSocket::handlePacket(PacketHeader header, QByteArray payload) {
     // IMPROVEMENT 2: More frequent ACKs and immediate ACK for gaps
     bool hasGap = (header.sequenceNumber > m_baseAckSeqNum);
 
-    if (m_untrackedCount >= 4 || hasGap) { // Reduced from 8 to 4 for faster feedback
+    if (m_untrackedCount >= 2 || hasGap) { // Reduced from 8 to 4 for faster feedback
 #ifdef DEBUG_RX_SOCKET
         qDebug() << "Sending acknowledgement (gap detected: " << hasGap << ")";
 #endif

@@ -284,8 +284,10 @@ void SlothTxSocket::handleNack(PacketHeader header, QByteArray buffer)
         for (int bit = 0; bit < 8; ++bit) {
             quint32 seq = base + i * 8 + bit;
             if (byte & (1 << (7 - bit))) {
-                m_missingWindow.insert(seq);
-                m_stats.totalPacketsLost++;
+                if(!m_missingWindow.contains(seq)) {
+                    m_missingWindow.insert(seq);
+                    m_stats.totalPacketsLost++;
+                }
             }
         }
     }
@@ -342,7 +344,10 @@ void SlothTxSocket::sendNextWindow()
             if (m_lastRextTime.contains(seq)) {
                 quint64 lastSent = m_lastRextTime[seq];
                 // Use adaptive spacing based on RTT
-                quint64 minSpacing = qMax(m_RTO / 2, (quint64)100);
+                quint64 spacingByRTT = m_RTO / 2;
+                quint64 spacingByLatency = m_estimatedRTT + m_RTO / 4;
+                // quint64 minSpacing = qMax(spacingByRTT, spacingByLatency);
+                quint64 minSpacing = m_RTO / 2;
                 if (now - lastSent < minSpacing) {
                     continue;
                 }
@@ -489,7 +494,7 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
     quint32 newlyAckedPackets = 0;
     quint64 now = m_rttTimer->elapsed();
 
-    // Process cumulative ACK
+    // mark all packets having seq base - 1 as acked
     if (base > m_baseSeqNum) {
         for (quint32 i = m_baseSeqNum; i < base; i++) {
             if (m_sendWindow.contains(i)) {
@@ -517,11 +522,15 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
                 newlyAckedPackets++;
                 m_bytesAcked += m_chunkSize;
             } else if (!isAcked && seq < m_nextSeqNum && seq >= base) {
-                // Hole in bitmap indicates loss
+                // hole in bitmap indicates loss, but we'll only consider this,
+                // when RTO has been passed for this packet
                 if (m_sendWindow.contains(seq)) {
-                    lossDetected = true;
-                    m_missingWindow.insert(seq);
-                    m_stats.totalPacketsLost++;
+                    quint64 age = now - m_sentTimestamp.value(seq, now);
+                    if(age > m_RTO && !m_missingWindow.contains(seq)) {
+                        lossDetected = true;
+                        m_missingWindow.insert(seq);
+                        m_stats.totalPacketsLost++;
+                    }
                 }
             }
         }
@@ -674,7 +683,7 @@ void SlothTxSocket::handleSuccessfulAck(quint32 newlyAckedPackets, quint64 now)
     } else {
         // Congestion Avoidance: linear growth
         // Increase by 1 packet per RTT (approximated)
-        if (m_consecutiveGoodAcks >= m_congestionWindow) {
+        if (m_consecutiveGoodAcks >= m_congestionWindow / 2) {
             m_congestionWindow++;
             m_consecutiveGoodAcks = 0;
 #ifdef DEBUG_TX_SOCKET

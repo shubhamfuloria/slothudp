@@ -127,6 +127,7 @@ private:
     QHash<quint32, QByteArray>m_inFlightWindow;
     QSet<quint32> m_missingWindow; // contains nack ids received from client
     QHash<quint32, quint64> m_lastRextTime;
+    QSet<quint32> m_alreadyMarkedLost;
 
     quint32 m_activeSessionId;
     SessionState m_sessionState = SessionState::NOTACTIVE;
