@@ -343,10 +343,7 @@ void SlothTxSocket::sendNextWindow()
         if (m_sendWindow.contains(seq)) {
             if (m_lastRextTime.contains(seq)) {
                 quint64 lastSent = m_lastRextTime[seq];
-                // Use adaptive spacing based on RTT
-                quint64 spacingByRTT = m_RTO / 2;
-                quint64 spacingByLatency = m_estimatedRTT + m_RTO / 4;
-                // quint64 minSpacing = qMax(spacingByRTT, spacingByLatency);
+
                 quint64 minSpacing = m_RTO / 2;
                 if (now - lastSent < minSpacing) {
                     continue;
@@ -363,12 +360,8 @@ void SlothTxSocket::sendNextWindow()
             packetsSent++;
             m_stats.totalPacketsSent++;
             m_stats.totalRetransmissions++;
-        }
-    }
 
-    // Clear processed retransmissions
-    for (quint32 seq : missingList) {
-        if (m_lastRextTime.contains(seq) && m_lastRextTime[seq] == now) {
+            // remove from missing window
             m_missingWindow.remove(seq);
         }
     }
