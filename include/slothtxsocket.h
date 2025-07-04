@@ -91,6 +91,19 @@ private:
      */
     bool initiateFileTransfer();
 
+    void updateSendingRate(quint64 now);
+    void updateRecentLossRate(quint64 now);
+    double adaptiveLossThreshold();
+    bool isLikelyCongestionLoss(quint64 now);
+    QList<quint64> m_lossEvents;
+
+    struct PacketEvent {
+        quint64 timestamp;
+        bool wasLost;
+    };
+
+    QQueue<PacketEvent>m_recentPackets;
+
 
     void stopTransmission();
     void handleBye();
@@ -145,7 +158,7 @@ private:
     // Adaptive Window Control
     quint32 m_congestionWindow = 10;      // Current congestion window
     quint32 m_slowStartThreshold = 65535; // Slow start threshold
-    quint32 m_maxWindow = 100;            // Maximum allowed window
+    quint32 m_maxWindow = 64;            // Maximum allowed window
     quint32 m_minWindow = 4;              // Minimum window size
 
     // Performance monitoring
@@ -185,6 +198,31 @@ private:
     static const int m_finRetryLimit = 5;
     bool m_transferCompleted = false;
     void performTransferCleanup();
+
+
+
+    double m_targetLossRate = 0.15;  // Accept up to 15% loss as normal
+    quint32 m_baselineWindow = 4;    // Higher baseline for lossy networks
+    double m_lossToleranceThreshold = 0.20;  // Only react to losses above 20%
+
+    // Rate-based control
+    double m_targetSendRate = 0.0;   // Target sending rate in bytes/ms
+    quint64 m_lastRateUpdate = 0;
+    double m_rateIncreaseStep = 0.05; // 5% increase per RTT
+
+    // Improved RTT tracking
+    QQueue<quint64> m_recentRTTs;
+    quint64 m_baseRTT = 0;
+
+    // Loss pattern analysis
+    struct LossPattern {
+        quint32 consecutiveLosses = 0;
+        quint32 totalLossesInWindow = 0;
+        double recentLossRate = 0.0;
+        quint64 lastLossTime = 0;
+    } m_lossPattern;
+
+
 
 private slots:
     /**
