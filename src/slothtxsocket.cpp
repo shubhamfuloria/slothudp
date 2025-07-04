@@ -454,22 +454,32 @@ void SlothTxSocket::handleRetransmissions()
 
 quint32 SlothTxSocket::getEffectiveWindowSize()
 {
-    // Use minimum of congestion window and configured max window
-    quint32 effectiveWindow = qMin(m_congestionWindow, m_maxWindow);
+    // Start with congestion window
+    quint32 effectiveWindow = m_congestionWindow;
+
+    // Apply rate-based limiting if rate control is active
+    if (m_targetSendRate > 0 && m_estimatedRTT > 0) {
+        // Calculate maximum packets we should send based on target rate
+        quint32 rateLimitedWindow = (m_targetSendRate * m_estimatedRTT) / m_chunkSize;
+        rateLimitedWindow = qMax(rateLimitedWindow, m_minWindow);
+
+        effectiveWindow = qMin(effectiveWindow, rateLimitedWindow);
+    }
+
+    // Apply configured limits
+    effectiveWindow = qMin(effectiveWindow, m_maxWindow);
     effectiveWindow = qMax(effectiveWindow, m_minWindow);
 
-    // Consider bandwidth-delay product for optimal window sizing
+    // For lossy networks, consider BDP with a higher multiplier
     if (m_estimatedBandwidth > 0 && m_estimatedRTT > 0) {
-        // BDP = bandwidth * RTT (converted to packets)
-        quint64 bdpBytes = (m_estimatedBandwidth * m_estimatedRTT);
+        quint64 bdpBytes = (m_estimatedBandwidth * m_estimatedRTT) * 3;  // 3x BDP for lossy networks
         quint32 bdpPackets = (bdpBytes / m_chunkSize) + 1;
-
-        // Use BDP as a guide, but don't exceed congestion window
-        effectiveWindow = qMin(effectiveWindow, bdpPackets * 2); // 2x BDP for buffer
+        effectiveWindow = qMin(effectiveWindow, bdpPackets);
     }
 
     return effectiveWindow;
 }
+
 
 void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
 {
@@ -487,7 +497,7 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
     quint32 newlyAckedPackets = 0;
     quint64 now = m_rttTimer->elapsed();
 
-    // mark all packets having seq base - 1 as acked
+    // Mark packets up to base - 1 as ACKed (cumulative ACK)
     if (base > m_baseSeqNum) {
         for (quint32 i = m_baseSeqNum; i < base; i++) {
             if (m_sendWindow.contains(i)) {
@@ -496,6 +506,9 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
                 m_missingWindow.remove(i);
                 newlyAckedPackets++;
                 m_bytesAcked += m_chunkSize;
+
+                // Record ACKed packet
+                m_recentPackets.push_back({ now, false });
             }
         }
         m_baseSeqNum = base;
@@ -514,15 +527,22 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
                 m_missingWindow.remove(seq);
                 newlyAckedPackets++;
                 m_bytesAcked += m_chunkSize;
-            } else if (!isAcked && seq < m_nextSeqNum && seq >= base) {
-                // hole in bitmap indicates loss, but we'll only consider this,
-                // when RTO has been passed for this packet
+
+                // Record ACKed packet
+                m_recentPackets.push_back({ now, false });
+            }
+            else if (!isAcked && seq < m_nextSeqNum && seq >= base) {
+                // Hole in bitmap = potential loss, check RTO
                 if (m_sendWindow.contains(seq)) {
                     quint64 age = now - m_sentTimestamp.value(seq, now);
-                    if(age > m_RTO && !m_missingWindow.contains(seq)) {
+                    if (age > m_RTO && !m_missingWindow.contains(seq)) {
                         lossDetected = true;
                         m_missingWindow.insert(seq);
                         m_stats.totalPacketsLost++;
+
+                        // Record Lost packet
+                        m_recentPackets.push_back({ now, true });
+                        m_recentLossCount++;
                     }
                 }
             }
@@ -544,10 +564,13 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
             if (m_sendWindow.contains(nextExpected)) {
                 m_missingWindow.insert(nextExpected);
                 m_stats.totalPacketsLost++;
+
+                // Record Lost packet
+                m_recentPackets.push_back({ now, true });
+                m_recentLossCount++;
             }
 
-            // Reset duplicate count
-            m_duplicateAckCount[base] = 0;
+            m_duplicateAckCount[base] = 0; // Reset
         }
     } else {
         m_duplicateAckCount.clear(); // Reset on new ACK
@@ -556,48 +579,89 @@ void SlothTxSocket::handleDataAck(PacketHeader header, QByteArray buffer)
 
     // Update congestion window based on loss detection
     if (lossDetected) {
-        handleLossEvent(now);
+        m_lossEvents.push_back(now);
+        updateRecentLossRate(now);  // ✅ Clean old entries and update rate
+        handleLossEvent(now);       // Uses recentLossRate now
     } else if (newlyAckedPackets > 0) {
         handleSuccessfulAck(newlyAckedPackets, now);
     }
 
-    // Update bandwidth estimation
+    // Update bandwidth estimate
     updateBandwidthEstimate(now);
 
     sendNextWindow();
 }
 
-void SlothTxSocket::handleLossEvent(quint64 now)
-{
-#ifdef DEBUG_TX_SOCKET
-    qDebug() << "Loss detected! CWnd:" << m_congestionWindow << "-> ";
-#endif
+void SlothTxSocket::updateRecentLossRate(quint64 now) {
+    // Remove old entries (older than 2*RTT)
+    quint64 window = qMax((quint64)(m_estimatedRTT * 2), (quint64)1000); // At least 1 second
 
-    // Multiplicative decrease
-    m_slowStartThreshold = qMax(m_congestionWindow / 2, m_minWindow);
-
-    // Different recovery strategies based on loss frequency
-    quint64 timeSinceLastLoss = (m_lastLossTime > 0) ? (now - m_lastLossTime) : UINT64_MAX;
-
-    if (timeSinceLastLoss < m_estimatedRTT * 4) {
-        // Frequent losses - be more conservative
-        m_congestionWindow = m_minWindow;
-        m_recentLossCount++;
-#ifdef DEBUG_TX_SOCKET
-        qDebug() << "Frequent loss detected, aggressive backoff";
-#endif
-    } else {
-        // Isolated loss - moderate backoff
-        m_congestionWindow = qMax(m_congestionWindow / 2, m_minWindow);
-        m_recentLossCount = 1;
+    while (!m_recentPackets.empty() &&
+           (now - m_recentPackets.front().timestamp) > window) {
+        if (m_recentPackets.front().wasLost) {
+            m_recentLossCount--;
+        }
+        m_recentPackets.pop_front();
     }
 
-    m_consecutiveGoodAcks = 0;
-    m_lastLossTime = now;
+    m_lossPattern.recentLossRate = m_recentPackets.empty() ? 0.0 :
+                                       (double)m_recentLossCount / m_recentPackets.size();
+}
 
-#ifdef DEBUG_TX_SOCKET
-    qDebug() << m_congestionWindow << "SSThresh:" << m_slowStartThreshold;
-#endif
+
+void SlothTxSocket::handleLossEvent(quint64 now) {
+    updateRecentLossRate(now);
+
+    // Only react if loss rate exceeds adaptive threshold
+    if (m_lossPattern.recentLossRate <= adaptiveLossThreshold()) {
+        // Loss within tolerance - no window reduction
+        return;
+    }
+
+    if (isLikelyCongestionLoss(now)) {
+        // Conservative congestion response
+        m_slowStartThreshold = qMax(m_congestionWindow * 4 / 5, m_minWindow);
+        m_congestionWindow = qMax(m_congestionWindow * 7 / 8, m_minWindow); // Smaller reduction
+
+        // Reduce target rate less aggressively
+        m_targetSendRate *= 0.9; // Was 0.8
+    } else {
+        // Random loss - minimal or no reaction
+        if (m_congestionWindow > m_minWindow * 2) {
+            m_congestionWindow = qMax(m_congestionWindow - 1, m_minWindow);
+        }
+    }
+}
+
+double SlothTxSocket::adaptiveLossThreshold() {
+    double baseThreshold = 0.05; // Start at 5%
+
+    // Scale threshold higher as RTT increases
+    if (m_estimatedRTT > 100) {
+        baseThreshold *= (1.0 + m_estimatedRTT / 400.0);
+    }
+
+    // Cap it to avoid being too permissive
+    return qMin(baseThreshold, 0.25); // Max 25%
+}
+
+bool SlothTxSocket::isLikelyCongestionLoss(quint64 now) {
+    // Check for loss clustering (indicates congestion)
+    int recentLosses = 0;
+    quint64 recentWindow = m_estimatedRTT; // Look back 1 RTT
+
+    for (auto it = m_lossEvents.rbegin();
+         it != m_lossEvents.rend() && (now - *it) <= recentWindow;
+         ++it) {
+        recentLosses++;
+    }
+
+    // Congestion indicators
+    bool burstLoss = recentLosses >= 3;
+    bool rttInflation = m_estimatedRTT > m_baseRTT * 1.5; // Reduced threshold
+    bool sustainedLoss = m_lossPattern.consecutiveLosses >= 2; // Reduced threshold
+
+    return burstLoss || rttInflation || sustainedLoss;
 }
 
 void SlothTxSocket::updateRTTAndBandwidth(quint32 seq, quint64 now)
@@ -606,32 +670,84 @@ void SlothTxSocket::updateRTTAndBandwidth(quint32 seq, quint64 now)
         quint64 sentTime = m_sentTimestamp.value(seq);
         quint64 rtt = now - sentTime;
 
-        // Update RTT statistics
-        m_rttSamples.enqueue(rtt);
-        if (m_rttSamples.size() > 10) {
-            m_rttSamples.dequeue(); // Keep only recent samples
+        // Filter out spurious RTT measurements
+        if (rtt > 0 && rtt < 10000) {  // Ignore RTTs > 10 seconds
+            m_recentRTTs.enqueue(rtt);
+            if (m_recentRTTs.size() > 20) {
+                m_recentRTTs.dequeue();
+            }
+
+            // Use median RTT for more stable estimates
+            QList<quint64> sortedRTTs;
+            for(quint64 rtt : m_recentRTTs) sortedRTTs.append(rtt);
+            qSort(sortedRTTs);
+
+            if (!sortedRTTs.isEmpty()) {
+                quint64 medianRTT = sortedRTTs[sortedRTTs.size() / 2];
+
+                // Track base RTT (minimum observed)
+                if (m_baseRTT == 0 || rtt < m_baseRTT) {
+                    m_baseRTT = rtt;
+                }
+
+                // More conservative RTT smoothing
+                if (m_estimatedRTT == 0) {
+                    m_estimatedRTT = medianRTT;
+                    m_devRTT = medianRTT / 4;  // Less aggressive deviation
+                } else {
+                    // Weight recent measurements more heavily
+                    double alpha = 0.3;  // Increased from 0.125
+                    m_estimatedRTT = (1 - alpha) * m_estimatedRTT + alpha * medianRTT;
+
+                    quint64 deviation = std::abs((qint64)medianRTT - (qint64)m_estimatedRTT);
+                    m_devRTT = 0.8 * m_devRTT + 0.2 * deviation;  // Less sensitive to spikes
+                }
+
+                // More conservative RTO calculation
+                m_RTO = m_estimatedRTT + 2 * m_devRTT;  // Reduced from 4x
+                m_RTO = qMax(m_RTO, m_baseRTT * 2);     // At least 2x base RTT
+                m_RTO = qMin(m_RTO, (quint64)2000);     // Cap at 2 seconds
+            }
         }
-
-        m_minRTT = qMin(m_minRTT, rtt);
-
-        // Smooth RTT calculation
-        if (m_estimatedRTT == 0) {
-            m_estimatedRTT = rtt;
-            m_devRTT = rtt / 2;
-        } else {
-            m_estimatedRTT = 0.875 * m_estimatedRTT + 0.125 * rtt;
-            quint64 deviation = std::abs((qint64)rtt - (qint64)m_estimatedRTT);
-            m_devRTT = 0.75 * m_devRTT + 0.25 * deviation;
-        }
-
-        // Update RTO
-        m_RTO = m_estimatedRTT + 4 * m_devRTT;
-        m_RTO = qMax(m_RTO, (quint64)100);
-        m_RTO = qMin(m_RTO, (quint64)3000);
 
         m_sentTimestamp.remove(seq);
     }
+
+    // Update sending rate estimation
+    updateSendingRate(now);
 }
+
+void SlothTxSocket::updateSendingRate(quint64 now)
+{
+    if (m_lastRateUpdate == 0) {
+        m_lastRateUpdate = now;
+        return;
+    }
+
+    quint64 timeDiff = now - m_lastRateUpdate;
+    if (timeDiff >= m_estimatedRTT && timeDiff > 0) {
+        // Calculate current loss rate
+        double currentLossRate = 0.0;
+        if (m_stats.totalPacketsSent > 0) {
+            currentLossRate = (double)m_stats.totalPacketsLost / m_stats.totalPacketsSent;
+        }
+
+        // Update target sending rate based on loss rate
+        if (currentLossRate < m_targetLossRate) {
+            // Loss rate acceptable - increase sending rate
+            m_targetSendRate *= (1.0 + m_rateIncreaseStep);
+        } else if (currentLossRate > m_lossToleranceThreshold) {
+            // Loss rate too high - decrease sending rate
+            double decreaseFactor = 1.0 - (currentLossRate - m_targetLossRate) * 0.5;
+            m_targetSendRate *= qMax(decreaseFactor, 0.7);  // Don't decrease by more than 30%
+        }
+        // If loss rate is between target and threshold, maintain current rate
+
+        m_lastRateUpdate = now;
+    }
+}
+
+
 
 void SlothTxSocket::updateBandwidthEstimate(quint64 now)
 {
@@ -664,34 +780,46 @@ void SlothTxSocket::updateBandwidthEstimate(quint64 now)
 
 void SlothTxSocket::handleSuccessfulAck(quint32 newlyAckedPackets, quint64 now)
 {
-    m_consecutiveGoodAcks += newlyAckedPackets;
+    m_consecutiveGoodAcks++;
 
-    // Adaptive window increase strategy
+    // Phase 1: Slow Start
     if (m_congestionWindow < m_slowStartThreshold) {
-        // Slow Start: exponential growth
-        m_congestionWindow += newlyAckedPackets;
+        // Faster ramp-up in early stages
+        if (m_congestionWindow < m_baselineWindow * 4) {
+            m_congestionWindow += 2;
+        } else {
+            m_congestionWindow++;
+        }
+
 #ifdef DEBUG_TX_SOCKET
-        qDebug() << "Slow Start: CWnd increased to" << m_congestionWindow;
+        qDebug() << "Slow Start: CWnd =" << m_congestionWindow;
 #endif
-    } else {
-        // Congestion Avoidance: linear growth
-        // Increase by 1 packet per RTT (approximated)
-        if (m_consecutiveGoodAcks >= m_congestionWindow / 2) {
+    }
+    // Phase 2: Congestion Avoidance
+    else {
+        // Faster growth than TCP, but still controlled
+        if (m_consecutiveGoodAcks >= m_congestionWindow / 3) {
             m_congestionWindow++;
             m_consecutiveGoodAcks = 0;
+
 #ifdef DEBUG_TX_SOCKET
-            qDebug() << "Congestion Avoidance: CWnd increased to" << m_congestionWindow;
+            qDebug() << "Congestion Avoidance: CWnd =" << m_congestionWindow;
 #endif
         }
     }
 
-    // Cap the window size
+    // Cap the window
     m_congestionWindow = qMin(m_congestionWindow, m_maxWindow);
 
-    // Adaptive maximum window based on performance
-    if (now - m_lastWindowAdjustment > m_estimatedRTT * 4) {
-        adaptMaxWindow();
-        m_lastWindowAdjustment = now;
+    // Reset loss tracking after stable success
+    if (m_consecutiveGoodAcks >= 5) {
+        m_lossPattern.consecutiveLosses = 0;
+        m_lossPattern.totalLossesInWindow = 0;
+    }
+
+    // Optional: increase send rate if under target loss
+    if (m_lossPattern.recentLossRate < m_targetLossRate) {
+        m_targetSendRate *= (1.0 + m_rateIncreaseStep / 2);
     }
 }
 
